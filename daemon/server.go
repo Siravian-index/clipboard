@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -49,14 +50,33 @@ type Server struct {
 	clients map[chan string]struct{}
 }
 
-// NewServer creates a Server with a 50-entry MemoryHistory and a 500ms PollingWatcher.
+// NewServer creates a Server with a SQLiteHistory and a 500ms PollingWatcher.
+// The database is stored at ~/.local/share/clipboard-manager/history.db.
 func NewServer() *Server {
+	dbPath, err := ensureDBPath()
+	if err != nil {
+		log.Fatalf("failed to prepare database directory: %v", err)
+	}
+
+	hist, err := history.NewSQLiteHistory(dbPath, 50)
+	if err != nil {
+		log.Fatalf("failed to open history database: %v", err)
+	}
+
 	return &Server{
-		hist:     history.NewMemoryHistory(50),
+		hist:     hist,
 		watch:    watcher.NewPollingWatcher(500 * time.Millisecond),
 		sockPath: os.Getenv("HOME") + socketPath,
 		clients:  make(map[chan string]struct{}),
 	}
+}
+
+func ensureDBPath() (string, error) {
+	dir := filepath.Join(os.Getenv("HOME"), ".local", "share", "clipboard-manager")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "history.db"), nil
 }
 
 // Run starts the watcher, listens on the Unix socket, and blocks until SIGINT/SIGTERM.
