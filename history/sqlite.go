@@ -3,6 +3,7 @@ package history
 import (
 	"database/sql"
 	"log"
+	"strings"
 	"sync"
 
 	_ "modernc.org/sqlite"
@@ -40,6 +41,12 @@ func NewSQLiteHistory(dbPath string, maxSize int) (*SQLiteHistory, error) {
 func (h *SQLiteHistory) Add(entry string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return
+	}
+
 	// Remove any existing occurrence so the entry moves to the top.
 	if _, err := h.db.Exec(`DELETE FROM entries WHERE content = ?`, entry); err != nil {
 		log.Printf("sqlite: failed to remove duplicate: %v", err)
