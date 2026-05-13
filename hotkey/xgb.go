@@ -2,6 +2,7 @@ package hotkey
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/jezek/xgb"
 	"github.com/jezek/xgb/xproto"
@@ -53,7 +54,7 @@ func (l *XGBListener) Register(keys string, callback func()) error {
 	fmt.Printf("[hotkey] registering %q → modifiers=0x%x keycode=%d\n", keys, mods, keycode)
 
 	cookie := xproto.GrabKeyChecked(
-		l.conn, true, l.root,
+		l.conn, false, l.root,
 		mods, keycode,
 		xproto.GrabModeAsync, xproto.GrabModeAsync,
 	)
@@ -72,6 +73,7 @@ func (l *XGBListener) Listen() error {
 		for {
 			ev, err := l.conn.WaitForEvent()
 			if err != nil {
+				fmt.Printf("[hotkey] listener stopped: %v\n", err)
 				return
 			}
 			if kp, ok := ev.(xproto.KeyPressEvent); ok {
@@ -91,7 +93,10 @@ func (l *XGBListener) Listen() error {
 
 func (l *XGBListener) Stop() error {
 	l.conn.Close()
-	<-l.done
+	select {
+	case <-l.done:
+	case <-time.After(2 * time.Second):
+	}
 	return nil
 }
 
@@ -112,6 +117,7 @@ func (l *XGBListener) parseKeys(keys string) (uint16, xproto.Keycode, error) {
 		"p": 0x70, "q": 0x71, "r": 0x72, "s": 0x73, "t": 0x74,
 		"u": 0x75, "v": 0x76, "w": 0x77, "x": 0x78, "y": 0x79,
 		"z": 0x7a,
+		"super": 0xffeb,
 	}
 
 	var mods uint16
@@ -125,6 +131,8 @@ func (l *XGBListener) parseKeys(keys string) (uint16, xproto.Keycode, error) {
 			mods |= ModShift
 		case "alt":
 			mods |= ModAlt
+		case "super":
+			mods |= xproto.ModMask4
 		default:
 			sym, ok := symMap[token]
 			if !ok {
@@ -155,8 +163,9 @@ func (l *XGBListener) parseKeys(keys string) (uint16, xproto.Keycode, error) {
 	perSym := int(keySyms.KeysymsPerKeycode)
 	minKeycode := int(xproto.Setup(l.conn).MinKeycode)
 
+	// match against lowercase keysym (index 0 per keycode)
 	for i, sym := range keySyms.Keysyms {
-		if uint32(sym) == targetSym {
+		if i%perSym == 0 && uint32(sym) == targetSym {
 			keycode := xproto.Keycode(minKeycode + i/perSym)
 			return mods, keycode, nil
 		}

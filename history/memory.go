@@ -1,6 +1,9 @@
 package history
 
-import "sync"
+import (
+	"strings"
+	"sync"
+)
 
 type MemoryHistory struct {
 	mu      sync.RWMutex
@@ -16,6 +19,10 @@ func (h *MemoryHistory) Add(entry string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return
+	}
 	if len(h.entries) > 0 && h.entries[0] == entry {
 		return
 	}
