@@ -23,11 +23,16 @@ func (h *MemoryHistory) Add(entry string) {
 	if entry == "" {
 		return
 	}
-	if len(h.entries) > 0 && h.entries[0] == entry {
-		return
+
+	// Remove existing occurrence anywhere in the list before prepending.
+	filtered := h.entries[:0]
+	for _, e := range h.entries {
+		if e != entry {
+			filtered = append(filtered, e)
+		}
 	}
 
-	h.entries = append([]string{entry}, h.entries...)
+	h.entries = append([]string{entry}, filtered...)
 	if len(h.entries) > h.maxSize {
 		h.entries = h.entries[:h.maxSize]
 	}

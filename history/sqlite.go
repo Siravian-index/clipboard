@@ -36,11 +36,9 @@ func NewSQLiteHistory(dbPath string, maxSize int) (*SQLiteHistory, error) {
 }
 
 func (h *SQLiteHistory) Add(entry string) {
-	// Skip if identical to the most recent entry.
-	var last string
-	row := h.db.QueryRow(`SELECT content FROM entries ORDER BY id DESC LIMIT 1`)
-	_ = row.Scan(&last)
-	if entry == last {
+	// Remove any existing occurrence so the entry moves to the top.
+	if _, err := h.db.Exec(`DELETE FROM entries WHERE content = ?`, entry); err != nil {
+		log.Printf("sqlite: failed to remove duplicate: %v", err)
 		return
 	}
 
