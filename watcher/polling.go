@@ -2,6 +2,7 @@ package watcher
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"golang.design/x/clipboard"
@@ -10,6 +11,8 @@ import (
 type PollingWatcher struct {
 	interval time.Duration
 	cancel   context.CancelFunc
+	mu       sync.Mutex
+	last     string
 }
 
 func NewPollingWatcher(interval time.Duration) *PollingWatcher {
@@ -25,15 +28,19 @@ func (w *PollingWatcher) Start(onChange func(content string)) error {
 	w.cancel = cancel
 
 	go func() {
-		var last string
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-time.After(w.interval):
 				content := string(clipboard.Read(clipboard.FmtText))
-				if content != "" && content != last {
-					last = content
+				w.mu.Lock()
+				seen := w.last
+				w.mu.Unlock()
+				if content != "" && content != seen {
+					w.mu.Lock()
+					w.last = content
+					w.mu.Unlock()
 					onChange(content)
 				}
 			}
@@ -48,4 +55,12 @@ func (w *PollingWatcher) Stop() error {
 		w.cancel()
 	}
 	return nil
+}
+
+// Reset clears the last-seen value so the next clipboard read is always
+// reported, even if it matches what was seen before a history clear.
+func (w *PollingWatcher) Reset() {
+	w.mu.Lock()
+	w.last = ""
+	w.mu.Unlock()
 }

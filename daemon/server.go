@@ -215,6 +215,7 @@ func (s *Server) handleConn(conn net.Conn) {
 				log.Printf("selected: %.40s", msg.Item)
 			case msgClear:
 				s.hist.Clear()
+				s.watch.Reset()
 				log.Println("history cleared")
 			default:
 				return

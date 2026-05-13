@@ -123,7 +123,10 @@ type HotkeyListener interface {
   - Mostrar thumbnails en la UI del picker
   - Al seleccionar una imagen, devolverla al clipboard como imagen (no como ruta)
   - Considerar límite de tamaño y limpieza de imágenes huérfanas al hacer clear
+- [ ] Temas (colores): permitir al usuario cambiar el tema de la UI desde Settings. Fyne soporta `theme.DarkTheme()` y `theme.LightTheme()` nativamente, y permite temas personalizados implementando la interfaz `fyne.Theme`. Persistir la selección en `config.json` y aplicarla con `a.Settings().SetTheme()` al arrancar.
+- [ ] Icono de aplicación: diseñar un PNG (256×256), embeber con `fyne bundle` y asignarlo con `a.SetIcon()` para reemplazar el engranaje por defecto en alt-tab, barra de título y taskbar.
 - [ ] Detección de contraseñas y ofuscación: identificar entradas del historial que posiblemente sean contraseñas (heurística: sin espacios, longitud mínima, mezcla de caracteres, etc.) y mostrarlas ofuscadas en la UI (`••••••••`) con opción de revelar/ocultar por item.
+- [ ] Detección de URLs: identificar entradas que sean links (validando con `url.Parse`) y mostrar un icono adicional en la fila para abrirlos directamente en el browser con `xdg-open`, manteniendo la acción de copiar como principal.
 - [ ] Watcher event-driven con X11 xfixes
 - [ ] Soporte Wayland via DBus
 - [x] Menú de ajustes en la UI con opciones configurables:

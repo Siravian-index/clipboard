@@ -104,8 +104,27 @@ func (f *FyneUI) Show(items []string, updates <-chan string, onClear func(), foc
 		}
 	}()
 
+	emptyLabel := widget.NewLabel("No history yet — start copying something!")
+	emptyLabel.Alignment = fyne.TextAlignCenter
+
+	refreshEmpty := func() {
+		all, _ := data.Get()
+		if len(all) == 0 {
+			emptyLabel.Show()
+		} else {
+			emptyLabel.Hide()
+		}
+	}
+	data.AddListener(binding.NewDataListener(func() {
+		refreshEmpty()
+	}))
+
 	settingsBtn := widget.NewButton("⚙ Settings", func() {
-		showSettings(a, w, cfg, data, onClear)
+		onClearUI := func() {
+			statusLabel.SetText("")
+			refreshEmpty()
+		}
+		showSettings(a, w, cfg, data, onClear, onClearUI)
 	})
 
 	w.SetOnClosed(func() {
@@ -116,7 +135,7 @@ func (f *FyneUI) Show(items []string, updates <-chan string, onClear func(), foc
 		widget.NewLabel("Select an entry to copy:"),
 		container.NewBorder(nil, nil, nil, settingsBtn, statusLabel),
 		nil, nil,
-		list,
+		container.NewStack(list, container.NewCenter(emptyLabel)),
 	))
 
 	w.Canvas().SetOnTypedKey(func(ev *fyne.KeyEvent) {
@@ -126,12 +145,13 @@ func (f *FyneUI) Show(items []string, updates <-chan string, onClear func(), foc
 	})
 
 	w.Show()
+	refreshEmpty()
 	a.Run()
 
 	return selections, nil
 }
 
-func showSettings(a fyne.App, parent fyne.Window, cfg *config.Config, data binding.StringList, onClear func()) {
+func showSettings(a fyne.App, parent fyne.Window, cfg *config.Config, data binding.StringList, onClear func(), onClearUI func()) {
 	sw := a.NewWindow("Settings")
 	sw.Resize(fyne.NewSize(360, 280))
 	sw.SetFixedSize(true)
@@ -157,6 +177,9 @@ func showSettings(a fyne.App, parent fyne.Window, cfg *config.Config, data bindi
 					_ = data.Set([]string{})
 					if onClear != nil {
 						onClear()
+					}
+					if onClearUI != nil {
+						onClearUI()
 					}
 				}
 			},
