@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.design/x/clipboard"
+
 	"github.com/david-pena/clipboard/config"
 	"github.com/david-pena/clipboard/history"
 	"github.com/david-pena/clipboard/watcher"
@@ -215,6 +217,7 @@ func (s *Server) handleConn(conn net.Conn) {
 				log.Printf("selected: %.40s", msg.Item)
 			case msgClear:
 				s.hist.Clear()
+				clipboard.Write(clipboard.FmtText, []byte{})
 				s.watch.Reset()
 				log.Println("history cleared")
 			default:

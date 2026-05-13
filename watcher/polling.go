@@ -57,8 +57,8 @@ func (w *PollingWatcher) Stop() error {
 	return nil
 }
 
-// Reset clears the last-seen value so the next clipboard read is always
-// reported, even if it matches what was seen before a history clear.
+// Reset clears the last-seen value. Call this after clearing the system
+// clipboard so the watcher picks up the next copy correctly.
 func (w *PollingWatcher) Reset() {
 	w.mu.Lock()
 	w.last = ""
