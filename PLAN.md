@@ -116,6 +116,7 @@ type HotkeyListener interface {
 - [x] Live update: daemon hace streaming de nuevas entradas al cliente vía socket, UI de Fyne se refresca en tiempo real sin cerrar la ventana
 - [x] Persistencia del historial en disco (SQLite) — las entradas sobreviven reinicios del daemon
 - [x] Mantener la ventana abierta después de seleccionar un item — permite pegar múltiples entradas sin reabrir el picker
+- [ ] Instancia única del picker (`show`): al correr `clipboard-manager show`, verificar si ya hay una instancia activa via un socket dedicado (`~/.clipboard-manager-show.sock`). Si existe, enviarle `{"type":"focus"}` y salir. Si no, levantar la UI, abrir el socket y escuchar mensajes de foco — al recibirlos llamar `w.RequestFocus()`.
 - [ ] Soporte de imágenes en el historial:
   - Detectar cuando el clipboard contiene una imagen (ej. screenshots de GNOME)
   - Guardar imágenes en disco (`~/.local/share/clipboard-manager/images/`) referenciadas desde SQLite
