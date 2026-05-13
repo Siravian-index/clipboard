@@ -3,6 +3,7 @@ package history
 import (
 	"database/sql"
 	"log"
+	"sync"
 
 	_ "modernc.org/sqlite"
 )
@@ -10,6 +11,7 @@ import (
 type SQLiteHistory struct {
 	db      *sql.DB
 	maxSize int
+	mu      sync.Mutex
 }
 
 // NewSQLiteHistory opens (or creates) a SQLite database at dbPath and returns
@@ -36,6 +38,8 @@ func NewSQLiteHistory(dbPath string, maxSize int) (*SQLiteHistory, error) {
 }
 
 func (h *SQLiteHistory) Add(entry string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	// Remove any existing occurrence so the entry moves to the top.
 	if _, err := h.db.Exec(`DELETE FROM entries WHERE content = ?`, entry); err != nil {
 		log.Printf("sqlite: failed to remove duplicate: %v", err)
@@ -81,6 +85,12 @@ func (h *SQLiteHistory) Clear() {
 	if _, err := h.db.Exec(`DELETE FROM entries`); err != nil {
 		log.Printf("sqlite: failed to clear entries: %v", err)
 	}
+}
+
+func (h *SQLiteHistory) SetMaxSize(maxSize int) {
+	h.mu.Lock()
+	h.maxSize = maxSize
+	h.mu.Unlock()
 }
 
 func (h *SQLiteHistory) Close() error {

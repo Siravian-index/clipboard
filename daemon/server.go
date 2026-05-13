@@ -3,15 +3,18 @@ package daemon
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/david-pena/clipboard/config"
 	"github.com/david-pena/clipboard/history"
 	"github.com/david-pena/clipboard/watcher"
 )
@@ -25,6 +28,7 @@ const (
 	msgAdd    msgType = "add"
 	msgSelect msgType = "select"
 	msgCancel msgType = "cancel"
+	msgClear  msgType = "clear"
 )
 
 type serverMsg struct {
@@ -40,23 +44,27 @@ type clientMsg struct {
 
 // Server holds the clipboard history, watcher, and a list of active client channels for streaming.
 type Server struct {
-	hist     history.History
-	watch    watcher.Watcher
+	hist    history.History
+	watch   watcher.Watcher
 	sockPath string
 
 	mu      sync.Mutex
 	clients map[chan string]struct{}
 }
 
-// NewServer creates a Server with a SQLiteHistory and a 500ms PollingWatcher.
-// The database is stored at ~/.local/share/clipboard-manager/history.db.
+// NewServer creates a Server using config from disk, with SQLiteHistory and a 500ms PollingWatcher.
 func NewServer() *Server {
-	dbPath, err := ensureDBPath()
+	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("failed to prepare database directory: %v", err)
+		log.Printf("failed to load config, using defaults: %v", err)
 	}
 
-	hist, err := history.NewSQLiteHistory(dbPath, 50)
+	dbPath, err := ensureDataPath()
+	if err != nil {
+		log.Fatalf("failed to prepare data directory: %v", err)
+	}
+
+	hist, err := history.NewSQLiteHistory(dbPath, cfg.MaxEntries)
 	if err != nil {
 		log.Fatalf("failed to open history database: %v", err)
 	}
@@ -69,15 +77,8 @@ func NewServer() *Server {
 	}
 }
 
-func ensureDBPath() (string, error) {
-	dir := filepath.Join(os.Getenv("HOME"), ".local", "share", "clipboard-manager")
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "history.db"), nil
-}
-
-// Run starts the watcher, listens on the Unix socket, and blocks until SIGINT/SIGTERM.
+// Run starts the watcher, listens on the Unix socket, handles SIGHUP for config
+// reload, and blocks until SIGINT/SIGTERM.
 func (s *Server) Run() {
 	if err := s.watch.Start(func(content string) {
 		s.hist.Add(content)
@@ -98,7 +99,12 @@ func (s *Server) Run() {
 		os.Remove(s.sockPath)
 	}()
 
-	log.Printf("daemon listening on %s", s.sockPath)
+	if err := writePIDFile(); err != nil {
+		log.Printf("failed to write pid file: %v", err)
+	}
+	defer removePIDFile()
+
+	log.Printf("daemon listening on %s (PID %d)", s.sockPath, os.Getpid())
 
 	go func() {
 		for {
@@ -110,10 +116,31 @@ func (s *Server) Run() {
 		}
 	}()
 
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
-	log.Println("daemon shutting down...")
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+
+	for sig := range sigs {
+		switch sig {
+		case syscall.SIGHUP:
+			s.reloadConfig()
+		default:
+			log.Println("daemon shutting down...")
+			return
+		}
+	}
+}
+
+// reloadConfig reads config from disk and applies updated max_entries to the history.
+func (s *Server) reloadConfig() {
+	cfg, err := config.Load()
+	if err != nil {
+		log.Printf("SIGHUP: failed to reload config: %v", err)
+		return
+	}
+	if sh, ok := s.hist.(*history.SQLiteHistory); ok {
+		sh.SetMaxSize(cfg.MaxEntries)
+	}
+	log.Printf("SIGHUP: config reloaded (max_entries=%d)", cfg.MaxEntries)
 }
 
 // broadcast sends a new item to all connected clients.
@@ -150,14 +177,12 @@ func (s *Server) handleConn(conn net.Conn) {
 	ch := s.subscribe()
 	defer s.unsubscribe(ch)
 
-	// Send initial history.
 	init, _ := json.Marshal(serverMsg{Type: msgInit, Items: s.hist.List()})
 	if _, err := conn.Write(append(init, '\n')); err != nil {
 		log.Printf("failed to send init: %v", err)
 		return
 	}
 
-	// Read all messages from the client (multiple selects, then cancel).
 	clientDone := make(chan clientMsg, 16)
 	go func() {
 		scanner := bufio.NewScanner(conn)
@@ -185,12 +210,49 @@ func (s *Server) handleConn(conn net.Conn) {
 			if !ok {
 				return
 			}
-			if msg.Type == msgSelect && msg.Item != "" {
+			switch msg.Type {
+			case msgSelect:
 				log.Printf("selected: %.40s", msg.Item)
-				// Keep looping — client may send more selections.
-			} else {
+			case msgClear:
+				s.hist.Clear()
+				log.Println("history cleared")
+			default:
 				return
 			}
 		}
 	}
+}
+
+func dataDir() string {
+	return filepath.Join(os.Getenv("HOME"), ".local", "share", "clipboard-manager")
+}
+
+func ensureDataPath() (string, error) {
+	dir := dataDir()
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "history.db"), nil
+}
+
+func pidFilePath() string {
+	return filepath.Join(dataDir(), "daemon.pid")
+}
+
+func writePIDFile() error {
+	return os.WriteFile(pidFilePath(), []byte(fmt.Sprintf("%d", os.Getpid())), 0600)
+}
+
+func removePIDFile() {
+	_ = os.Remove(pidFilePath())
+}
+
+// ReadPID returns the PID stored in the daemon pidfile, or 0 if not found.
+func ReadPID() int {
+	data, err := os.ReadFile(pidFilePath())
+	if err != nil {
+		return 0
+	}
+	pid, _ := strconv.Atoi(string(data))
+	return pid
 }

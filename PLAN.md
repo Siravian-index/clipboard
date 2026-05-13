@@ -119,10 +119,11 @@ type HotkeyListener interface {
 - [ ] Soporte Wayland via DBus
 - [ ] Mantener la ventana abierta después de seleccionar un item — permite pegar múltiples entradas sin reabrir el picker
 - [ ] Menú de ajustes en la UI con opciones configurables:
-  - Mantener ventana abierta tras selección (on/off)
-  - Límite máximo de entradas en el historial
-  - Intervalo de polling del watcher
-- [ ] Persistir ajustes del usuario en disco (JSON o TOML en `~/.config/clipboard-manager/config.json`)
+  - Mantener ventana abierta tras selección (on/off) — aplica inmediato, solo afecta al cliente
+  - Límite máximo de entradas en el historial — aplica enviando SIGHUP al daemon
+  - Botón para limpiar el historial completo con confirmación
+- [ ] Persistir ajustes en `~/.config/clipboard-manager/config.json` via paquete `config/`
+- [ ] Daemon recarga configuración al recibir SIGHUP (estándar Unix)
 
 ### Fase 3 — Distribución
 - [ ] Makefile con cross-compilation targets

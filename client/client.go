@@ -19,6 +19,7 @@ const (
 	msgAdd    msgType = "add"
 	msgSelect msgType = "select"
 	msgCancel msgType = "cancel"
+	msgClear  msgType = "clear"
 )
 
 type serverMsg struct {
@@ -68,7 +69,12 @@ func Run() {
 		}
 	}()
 
-	selections, err := ui.NewFyneUI().Show(init.Items, updates)
+	onClear := func() {
+		msg, _ := json.Marshal(clientMsg{Type: msgClear})
+		conn.Write(append(msg, '\n'))
+	}
+
+	selections, err := ui.NewFyneUI().Show(init.Items, updates, onClear)
 	if err != nil {
 		msg, _ := json.Marshal(clientMsg{Type: msgCancel})
 		conn.Write(append(msg, '\n'))
