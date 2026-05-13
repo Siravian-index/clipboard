@@ -104,32 +104,32 @@ type HotkeyListener interface {
 ## Fases de desarrollo
 
 ### Fase 1 — MVP
-- [ ] `go mod init`
-- [ ] Interfaces de todos los componentes
-- [ ] `history/memory.go` — historial en memoria (máx. 50 entradas)
-- [ ] `watcher/polling.go` — polling cada 500ms con `golang.design/x/clipboard`
-- [ ] `ui/fyne.go` — ventana popup con lista seleccionable
-- [ ] `hotkey/xgb.go` — registrar hotkey global en X11
-- [ ] `main.go` — orquesta todos los componentes
+- [x] `go mod init`
+- [x] Interfaces de todos los componentes
+- [x] `history/memory.go` — historial en memoria (máx. 50 entradas)
+- [x] `watcher/polling.go` — polling cada 500ms con `golang.design/x/clipboard`
+- [x] `ui/fyne.go` — ventana popup con lista seleccionable
+- [x] `main.go` — daemon + show subcommands via Unix socket
+- [x] GNOME custom shortcut para abrir el picker
 
 ### Fase 2 — Mejoras
 - [x] Live update: daemon hace streaming de nuevas entradas al cliente vía socket, UI de Fyne se refresca en tiempo real sin cerrar la ventana
-- [ ] Persistencia del historial en disco (SQLite) — las entradas sobreviven reinicios del daemon
+- [x] Persistencia del historial en disco (SQLite) — las entradas sobreviven reinicios del daemon
+- [x] Mantener la ventana abierta después de seleccionar un item — permite pegar múltiples entradas sin reabrir el picker
 - [ ] Watcher event-driven con X11 xfixes
 - [ ] Soporte Wayland via DBus
-- [ ] Mantener la ventana abierta después de seleccionar un item — permite pegar múltiples entradas sin reabrir el picker
-- [ ] Menú de ajustes en la UI con opciones configurables:
+- [x] Menú de ajustes en la UI con opciones configurables:
   - Mantener ventana abierta tras selección (on/off) — aplica inmediato, solo afecta al cliente
   - Límite máximo de entradas en el historial — aplica enviando SIGHUP al daemon
   - Botón para limpiar el historial completo con confirmación
-- [ ] Persistir ajustes en `~/.config/clipboard-manager/config.json` via paquete `config/`
-- [ ] Daemon recarga configuración al recibir SIGHUP (estándar Unix)
+- [x] Persistir ajustes en `~/.config/clipboard-manager/config.json` via paquete `config/`
+- [x] Daemon recarga configuración al recibir SIGHUP (estándar Unix)
 
 ### Fase 3 — Distribución
-- [ ] Makefile con cross-compilation targets
-- [ ] systemd user service para autostart al login (`~/.config/systemd/user/clipboard-manager.service`)
+- [x] systemd user service para autostart al login (`~/.config/systemd/user/clipboard-manager.service`)
   - Durante desarrollo: `ExecStart=%h/Code/golang/clipboard/clipboard-manager daemon` — apunta al binario del repo, se actualiza con cada `go build`
   - Para distribución: `make install` copia el binario a `/usr/local/bin` y actualiza el service
+- [ ] Makefile con cross-compilation targets
 - [ ] Script de instalación (`make install`) que copia el binario, instala el service y lo habilita
 - [ ] UI nativa X11 para eliminar dependencia de Fyne
 
