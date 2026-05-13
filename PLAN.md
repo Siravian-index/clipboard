@@ -17,8 +17,9 @@ Construir un clipboard manager para Linux (X11) en Go que:
 | UI | Fyne | X11 nativo |
 | Watcher | Polling cada 500ms | X11 Events (xfixes) |
 | Historial | En memoria | SQLite / archivo |
-| Hotkey | xgb (X11) | DBus (Wayland) |
+| Hotkey | GNOME Custom Shortcut | — |
 | Clipboard | `golang.design/x/clipboard` | — |
+| Autostart | systemd user service | — |
 
 ---
 
@@ -116,10 +117,12 @@ type HotkeyListener interface {
 - [ ] Watcher event-driven con X11 xfixes
 - [ ] Soporte Wayland via DBus
 - [ ] Configuración via archivo (hotkey, tamaño del historial, etc.)
+- [ ] Live update: daemon hace streaming de nuevas entradas al cliente vía socket, UI de Fyne se refresca en tiempo real sin cerrar la ventana
 
 ### Fase 3 — Distribución
 - [ ] Makefile con cross-compilation targets
-- [ ] Script de instalación / systemd service
+- [ ] systemd user service para autostart al login (`~/.config/systemd/user/clipboard-manager.service`)
+- [ ] Script de instalación (`make install`) que copia el binario, instala el service y lo habilita
 - [ ] UI nativa X11 para eliminar dependencia de Fyne
 
 ---

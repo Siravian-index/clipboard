@@ -1,5 +1,5 @@
 package ui
 
 type UI interface {
-	Show(items []string) (selected string, err error)
+	Show(items []string, updates <-chan string) (selected string, err error)
 }

@@ -2,10 +2,12 @@ package ui
 
 import (
 	"errors"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/data/binding"
 	"fyne.io/fyne/v2/widget"
 )
 
@@ -15,8 +17,8 @@ func NewFyneUI() *FyneUI {
 	return &FyneUI{}
 }
 
-func (f *FyneUI) Show(items []string) (string, error) {
-	if len(items) == 0 {
+func (f *FyneUI) Show(items []string, updates <-chan string) (string, error) {
+	if len(items) == 0 && updates == nil {
 		return "", errors.New("no history entries")
 	}
 
@@ -26,25 +28,43 @@ func (f *FyneUI) Show(items []string) (string, error) {
 	w.SetFixedSize(true)
 	w.CenterOnScreen()
 
+	data := binding.NewStringList()
+	_ = data.Set(items)
+
 	selected := ""
 
-	list := widget.NewList(
-		func() int { return len(items) },
+	list := widget.NewListWithData(
+		data,
 		func() fyne.CanvasObject {
 			return widget.NewLabel("")
 		},
-		func(i widget.ListItemID, o fyne.CanvasObject) {
-			text := items[i]
-			if len(text) > 80 {
-				text = text[:80] + "…"
+		func(item binding.DataItem, o fyne.CanvasObject) {
+			s, _ := item.(binding.String).Get()
+			text := strings.ReplaceAll(s, "\n", " ")
+			text = strings.Join(strings.Fields(text), " ")
+			if len([]rune(text)) > 80 {
+				text = string([]rune(text)[:80]) + "…"
 			}
 			o.(*widget.Label).SetText(text)
 		},
 	)
 
 	list.OnSelected = func(id widget.ListItemID) {
-		selected = items[id]
-		w.Close()
+		all, _ := data.Get()
+		if id < len(all) {
+			selected = all[id]
+			w.Close()
+		}
+	}
+
+	// Listen for new items from the daemon and prepend them to the list.
+	if updates != nil {
+		go func() {
+			for item := range updates {
+				current, _ := data.Get()
+				_ = data.Set(append([]string{item}, current...))
+			}
+		}()
 	}
 
 	w.SetContent(container.NewBorder(

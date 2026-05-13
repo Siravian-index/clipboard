@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"bufio"
 	"encoding/json"
 	"log"
 	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -17,20 +19,43 @@ import (
 
 const socketPath = "/.clipboard-manager.sock"
 
-// Server holds the clipboard history and watcher, and serves history over a Unix socket.
+type msgType string
+
+const (
+	msgInit   msgType = "init"
+	msgAdd    msgType = "add"
+	msgSelect msgType = "select"
+	msgCancel msgType = "cancel"
+)
+
+type serverMsg struct {
+	Type  msgType  `json:"type"`
+	Items []string `json:"items,omitempty"`
+	Item  string   `json:"item,omitempty"`
+}
+
+type clientMsg struct {
+	Type msgType `json:"type"`
+	Item string  `json:"item,omitempty"`
+}
+
+// Server holds the clipboard history, watcher, and a list of active client channels for streaming.
 type Server struct {
-	hist    history.History
-	watch   watcher.Watcher
+	hist     history.History
+	watch    watcher.Watcher
 	sockPath string
+
+	mu      sync.Mutex
+	clients map[chan string]struct{}
 }
 
 // NewServer creates a Server with a 50-entry MemoryHistory and a 500ms PollingWatcher.
 func NewServer() *Server {
-	home := os.Getenv("HOME")
 	return &Server{
 		hist:     history.NewMemoryHistory(50),
 		watch:    watcher.NewPollingWatcher(500 * time.Millisecond),
-		sockPath: home + socketPath,
+		sockPath: os.Getenv("HOME") + socketPath,
+		clients:  make(map[chan string]struct{}),
 	}
 }
 
@@ -39,14 +64,13 @@ func (s *Server) Run() {
 	if err := s.watch.Start(func(content string) {
 		s.hist.Add(content)
 		log.Printf("captured: %.40s", content)
+		s.broadcast(content)
 	}); err != nil {
 		log.Fatalf("failed to start watcher: %v", err)
 	}
 	defer s.watch.Stop()
 
-	// Remove stale socket file if it exists.
 	_ = os.Remove(s.sockPath)
-
 	ln, err := net.Listen("unix", s.sockPath)
 	if err != nil {
 		log.Fatalf("failed to listen on socket %s: %v", s.sockPath, err)
@@ -58,13 +82,10 @@ func (s *Server) Run() {
 
 	log.Printf("daemon listening on %s", s.sockPath)
 
-	// Accept connections in a separate goroutine so the main goroutine can
-	// wait for OS signals.
 	go func() {
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
-				// Listener was closed — stop accepting.
 				return
 			}
 			go s.handleConn(conn)
@@ -74,44 +95,83 @@ func (s *Server) Run() {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
-
 	log.Println("daemon shutting down...")
 }
 
-// handleConn sends the current history to the client, reads the selected item,
-// and writes it to the clipboard if non-empty.
+// broadcast sends a new item to all connected clients.
+func (s *Server) broadcast(item string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for ch := range s.clients {
+		select {
+		case ch <- item:
+		default:
+		}
+	}
+}
+
+func (s *Server) subscribe() chan string {
+	ch := make(chan string, 16)
+	s.mu.Lock()
+	s.clients[ch] = struct{}{}
+	s.mu.Unlock()
+	return ch
+}
+
+func (s *Server) unsubscribe(ch chan string) {
+	s.mu.Lock()
+	delete(s.clients, ch)
+	s.mu.Unlock()
+	close(ch)
+}
+
+// handleConn sends the current history, streams new items, then waits for the client's selection.
 func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
 
-	// Send history as a JSON array followed by a newline.
-	items := s.hist.List()
-	data, err := json.Marshal(items)
-	if err != nil {
-		log.Printf("failed to marshal history: %v", err)
-		return
-	}
-	data = append(data, '\n')
-	if _, err := conn.Write(data); err != nil {
-		log.Printf("failed to send history: %v", err)
+	ch := s.subscribe()
+	defer s.unsubscribe(ch)
+
+	// Send initial history.
+	init, _ := json.Marshal(serverMsg{Type: msgInit, Items: s.hist.List()})
+	if _, err := conn.Write(append(init, '\n')); err != nil {
+		log.Printf("failed to send init: %v", err)
 		return
 	}
 
-	// Read the client's response — a JSON string (selected item or empty string).
-	buf := make([]byte, 1<<20) // 1 MiB should be more than enough
-	n, err := conn.Read(buf)
-	if err != nil {
-		log.Printf("failed to read selection: %v", err)
-		return
-	}
+	// Stream new items to the client until it sends a response.
+	clientDone := make(chan clientMsg, 1)
+	go func() {
+		scanner := bufio.NewScanner(conn)
+		scanner.Buffer(make([]byte, 1<<20), 1<<20)
+		if scanner.Scan() {
+			var msg clientMsg
+			if err := json.Unmarshal(scanner.Bytes(), &msg); err == nil {
+				clientDone <- msg
+			}
+		}
+		close(clientDone)
+	}()
 
-	var selected string
-	if err := json.Unmarshal(buf[:n], &selected); err != nil {
-		log.Printf("failed to unmarshal selection: %v", err)
-		return
-	}
-
-	if selected != "" {
-		clipboard.Write(clipboard.FmtText, []byte(selected))
-		log.Printf("wrote to clipboard: %.40s", selected)
+	for {
+		select {
+		case item, ok := <-ch:
+			if !ok {
+				return
+			}
+			data, _ := json.Marshal(serverMsg{Type: msgAdd, Item: item})
+			if _, err := conn.Write(append(data, '\n')); err != nil {
+				return
+			}
+		case msg, ok := <-clientDone:
+			if !ok {
+				return
+			}
+			if msg.Type == msgSelect && msg.Item != "" {
+				clipboard.Write(clipboard.FmtText, []byte(msg.Item))
+				log.Printf("wrote to clipboard: %.40s", msg.Item)
+			}
+			return
+		}
 	}
 }

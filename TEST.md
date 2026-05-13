@@ -1,8 +1,0 @@
-Contenido
-
-texto
-
-Claude
-
-Claude
-

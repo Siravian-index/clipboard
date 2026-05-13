@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bufio"
 	"encoding/json"
 	"log"
 	"net"
@@ -11,42 +12,72 @@ import (
 
 const socketPath = "/.clipboard-manager.sock"
 
-// Run connects to the daemon socket, retrieves history, shows the Fyne UI,
-// and sends the user's selection (or an empty string) back to the daemon.
-func Run() {
-	sockPath := os.Getenv("HOME") + socketPath
+type msgType string
 
-	conn, err := net.Dial("unix", sockPath)
+const (
+	msgInit   msgType = "init"
+	msgAdd    msgType = "add"
+	msgSelect msgType = "select"
+	msgCancel msgType = "cancel"
+)
+
+type serverMsg struct {
+	Type  msgType  `json:"type"`
+	Items []string `json:"items,omitempty"`
+	Item  string   `json:"item,omitempty"`
+}
+
+type clientMsg struct {
+	Type msgType `json:"type"`
+	Item string  `json:"item,omitempty"`
+}
+
+// Run connects to the daemon, shows the Fyne picker with live updates,
+// and sends the user's selection back.
+func Run() {
+	conn, err := net.Dial("unix", os.Getenv("HOME")+socketPath)
 	if err != nil {
-		log.Fatalf("failed to connect to daemon at %s: %v", sockPath, err)
+		log.Fatalf("failed to connect to daemon: %v", err)
 	}
 	defer conn.Close()
 
-	// Read the JSON array sent by the daemon.
-	buf := make([]byte, 1<<20)
-	n, err := conn.Read(buf)
-	if err != nil {
-		log.Fatalf("failed to read history from daemon: %v", err)
+	scanner := bufio.NewScanner(conn)
+	scanner.Buffer(make([]byte, 1<<20), 1<<20)
+
+	// First message is always the initial history list.
+	if !scanner.Scan() {
+		log.Fatalf("failed to read init message from daemon")
+	}
+	var init serverMsg
+	if err := json.Unmarshal(scanner.Bytes(), &init); err != nil || init.Type != msgInit {
+		log.Fatalf("unexpected init message: %s", scanner.Bytes())
 	}
 
-	var items []string
-	if err := json.Unmarshal(buf[:n], &items); err != nil {
-		log.Fatalf("failed to unmarshal history: %v", err)
+	// Stream subsequent add messages into the updates channel.
+	updates := make(chan string, 32)
+	go func() {
+		defer close(updates)
+		for scanner.Scan() {
+			var msg serverMsg
+			if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+				continue
+			}
+			if msg.Type == msgAdd {
+				updates <- msg.Item
+			}
+		}
+	}()
+
+	selected, _ := ui.NewFyneUI().Show(init.Items, updates)
+
+	// Send selection back to daemon.
+	var response clientMsg
+	if selected != "" {
+		response = clientMsg{Type: msgSelect, Item: selected}
+	} else {
+		response = clientMsg{Type: msgCancel}
 	}
 
-	// Show the Fyne UI and get the user's selection.
-	fyneUI := ui.NewFyneUI()
-	selected, _ := fyneUI.Show(items)
-	// Show returns an error when nothing is selected — we still need to
-	// respond to the daemon with an empty string in that case.
-
-	// Send selection back as a JSON string.
-	response, err := json.Marshal(selected)
-	if err != nil {
-		log.Fatalf("failed to marshal selection: %v", err)
-	}
-	response = append(response, '\n')
-	if _, err := conn.Write(response); err != nil {
-		log.Fatalf("failed to send selection to daemon: %v", err)
-	}
+	data, _ := json.Marshal(response)
+	conn.Write(append(data, '\n'))
 }
