@@ -123,6 +123,7 @@ type HotkeyListener interface {
   - Mostrar thumbnails en la UI del picker
   - Al seleccionar una imagen, devolverla al clipboard como imagen (no como ruta)
   - Considerar límite de tamaño y limpieza de imágenes huérfanas al hacer clear
+- [ ] Detección de contraseñas y ofuscación: identificar entradas del historial que posiblemente sean contraseñas (heurística: sin espacios, longitud mínima, mezcla de caracteres, etc.) y mostrarlas ofuscadas en la UI (`••••••••`) con opción de revelar/ocultar por item.
 - [ ] Watcher event-driven con X11 xfixes
 - [ ] Soporte Wayland via DBus
 - [x] Menú de ajustes en la UI con opciones configurables:

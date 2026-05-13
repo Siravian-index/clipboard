@@ -22,7 +22,7 @@ func NewFyneUI() *FyneUI {
 
 // Show displays the clipboard history picker. It returns a channel that emits
 // each item the user selects; the channel is closed when the window is dismissed.
-func (f *FyneUI) Show(items []string, updates <-chan string, onClear func()) (<-chan string, error) {
+func (f *FyneUI) Show(items []string, updates <-chan string, onClear func(), focusReqs <-chan struct{}) (<-chan string, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		cfg = config.Default()
@@ -80,9 +80,13 @@ func (f *FyneUI) Show(items []string, updates <-chan string, onClear func()) (<-
 		list.Unselect(id)
 	}
 
-	if updates != nil {
-		go func() {
-			for item := range updates {
+	go func() {
+		for {
+			select {
+			case item, ok := <-updates:
+				if !ok {
+					return
+				}
 				current, _ := data.Get()
 				filtered := current[:0]
 				for _, e := range current {
@@ -91,9 +95,14 @@ func (f *FyneUI) Show(items []string, updates <-chan string, onClear func()) (<-
 					}
 				}
 				_ = data.Set(append([]string{item}, filtered...))
+			case _, ok := <-focusReqs:
+				if !ok {
+					return
+				}
+				w.RequestFocus()
 			}
-		}()
-	}
+		}
+	}()
 
 	settingsBtn := widget.NewButton("⚙ Settings", func() {
 		showSettings(a, w, cfg, data, onClear)
