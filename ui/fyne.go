@@ -17,21 +17,25 @@ func NewFyneUI() *FyneUI {
 	return &FyneUI{}
 }
 
-func (f *FyneUI) Show(items []string, updates <-chan string) (string, error) {
+// Show displays the clipboard history picker. It returns a channel that emits
+// each item the user selects; the channel is closed when the window is dismissed.
+func (f *FyneUI) Show(items []string, updates <-chan string) (<-chan string, error) {
 	if len(items) == 0 && updates == nil {
-		return "", errors.New("no history entries")
+		return nil, errors.New("no history entries")
 	}
+
+	selections := make(chan string, 16)
 
 	a := app.New()
 	w := a.NewWindow("Clipboard History")
-	w.Resize(fyne.NewSize(500, 400))
+	w.Resize(fyne.NewSize(500, 420))
 	w.SetFixedSize(true)
 	w.CenterOnScreen()
 
 	data := binding.NewStringList()
 	_ = data.Set(items)
 
-	selected := ""
+	statusLabel := widget.NewLabel("")
 
 	list := widget.NewListWithData(
 		data,
@@ -52,12 +56,20 @@ func (f *FyneUI) Show(items []string, updates <-chan string) (string, error) {
 	list.OnSelected = func(id widget.ListItemID) {
 		all, _ := data.Get()
 		if id < len(all) {
-			selected = all[id]
-			w.Close()
+			item := all[id]
+			w.Clipboard().SetContent(item)
+			selections <- item
+			preview := strings.ReplaceAll(item, "\n", " ")
+			preview = strings.Join(strings.Fields(preview), " ")
+			if len([]rune(preview)) > 50 {
+				preview = string([]rune(preview)[:50]) + "…"
+			}
+			statusLabel.SetText("Copied: " + preview)
 		}
+		list.Unselect(id)
 	}
 
-	// Listen for new items from the daemon and prepend them to the list.
+	// Listen for new items streamed from the daemon.
 	if updates != nil {
 		go func() {
 			for item := range updates {
@@ -67,9 +79,14 @@ func (f *FyneUI) Show(items []string, updates <-chan string) (string, error) {
 		}()
 	}
 
+	w.SetOnClosed(func() {
+		close(selections)
+	})
+
 	w.SetContent(container.NewBorder(
-		widget.NewLabel("Select an entry to paste:"),
-		nil, nil, nil,
+		widget.NewLabel("Select an entry to copy:"),
+		statusLabel,
+		nil, nil,
 		list,
 	))
 
@@ -79,10 +96,8 @@ func (f *FyneUI) Show(items []string, updates <-chan string) (string, error) {
 		}
 	})
 
-	w.ShowAndRun()
+	w.Show()
+	a.Run()
 
-	if selected == "" {
-		return "", errors.New("no entry selected")
-	}
-	return selected, nil
+	return selections, nil
 }

@@ -68,16 +68,19 @@ func Run() {
 		}
 	}()
 
-	selected, _ := ui.NewFyneUI().Show(init.Items, updates)
-
-	// Send selection back to daemon.
-	var response clientMsg
-	if selected != "" {
-		response = clientMsg{Type: msgSelect, Item: selected}
-	} else {
-		response = clientMsg{Type: msgCancel}
+	selections, err := ui.NewFyneUI().Show(init.Items, updates)
+	if err != nil {
+		msg, _ := json.Marshal(clientMsg{Type: msgCancel})
+		conn.Write(append(msg, '\n'))
+		return
 	}
 
-	data, _ := json.Marshal(response)
-	conn.Write(append(data, '\n'))
+	for item := range selections {
+		msg, _ := json.Marshal(clientMsg{Type: msgSelect, Item: item})
+		conn.Write(append(msg, '\n'))
+	}
+
+	// Window was closed — notify daemon.
+	msg, _ := json.Marshal(clientMsg{Type: msgCancel})
+	conn.Write(append(msg, '\n'))
 }

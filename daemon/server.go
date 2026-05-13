@@ -12,8 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"golang.design/x/clipboard"
-
 	"github.com/david-pena/clipboard/history"
 	"github.com/david-pena/clipboard/watcher"
 )
@@ -159,12 +157,12 @@ func (s *Server) handleConn(conn net.Conn) {
 		return
 	}
 
-	// Stream new items to the client until it sends a response.
-	clientDone := make(chan clientMsg, 1)
+	// Read all messages from the client (multiple selects, then cancel).
+	clientDone := make(chan clientMsg, 16)
 	go func() {
 		scanner := bufio.NewScanner(conn)
 		scanner.Buffer(make([]byte, 1<<20), 1<<20)
-		if scanner.Scan() {
+		for scanner.Scan() {
 			var msg clientMsg
 			if err := json.Unmarshal(scanner.Bytes(), &msg); err == nil {
 				clientDone <- msg
@@ -188,10 +186,11 @@ func (s *Server) handleConn(conn net.Conn) {
 				return
 			}
 			if msg.Type == msgSelect && msg.Item != "" {
-				clipboard.Write(clipboard.FmtText, []byte(msg.Item))
-				log.Printf("wrote to clipboard: %.40s", msg.Item)
+				log.Printf("selected: %.40s", msg.Item)
+				// Keep looping — client may send more selections.
+			} else {
+				return
 			}
-			return
 		}
 	}
 }
