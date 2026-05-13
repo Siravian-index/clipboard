@@ -113,15 +113,22 @@ type HotkeyListener interface {
 - [ ] `main.go` — orquesta todos los componentes
 
 ### Fase 2 — Mejoras
-- [ ] Persistencia del historial en disco (SQLite o JSON)
+- [x] Live update: daemon hace streaming de nuevas entradas al cliente vía socket, UI de Fyne se refresca en tiempo real sin cerrar la ventana
+- [ ] Persistencia del historial en disco (SQLite) — las entradas sobreviven reinicios del daemon
 - [ ] Watcher event-driven con X11 xfixes
 - [ ] Soporte Wayland via DBus
-- [ ] Configuración via archivo (hotkey, tamaño del historial, etc.)
-- [ ] Live update: daemon hace streaming de nuevas entradas al cliente vía socket, UI de Fyne se refresca en tiempo real sin cerrar la ventana
+- [ ] Mantener la ventana abierta después de seleccionar un item — permite pegar múltiples entradas sin reabrir el picker
+- [ ] Menú de ajustes en la UI con opciones configurables:
+  - Mantener ventana abierta tras selección (on/off)
+  - Límite máximo de entradas en el historial
+  - Intervalo de polling del watcher
+- [ ] Persistir ajustes del usuario en disco (JSON o TOML en `~/.config/clipboard-manager/config.json`)
 
 ### Fase 3 — Distribución
 - [ ] Makefile con cross-compilation targets
 - [ ] systemd user service para autostart al login (`~/.config/systemd/user/clipboard-manager.service`)
+  - Durante desarrollo: `ExecStart=%h/Code/golang/clipboard/clipboard-manager daemon` — apunta al binario del repo, se actualiza con cada `go build`
+  - Para distribución: `make install` copia el binario a `/usr/local/bin` y actualiza el service
 - [ ] Script de instalación (`make install`) que copia el binario, instala el service y lo habilita
 - [ ] UI nativa X11 para eliminar dependencia de Fyne
 
