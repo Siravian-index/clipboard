@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"unicode"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -54,6 +55,30 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 	current := make([]history.ClipboardEntry, len(items))
 	copy(current, items)
 
+	// filtered holds the current view after applying the search query.
+	var filtered []history.ClipboardEntry
+	var query string
+
+	applyFilter := func() {
+		if query == "" {
+			filtered = current
+		} else {
+			filtered = nil
+			for _, e := range current {
+				var haystack string
+				if e.Type == history.EntryTypeImage {
+					haystack = imageLabel(e.Content)
+				} else {
+					haystack = e.Content
+				}
+				if fuzzyMatch(query, haystack) {
+					filtered = append(filtered, e)
+				}
+			}
+		}
+	}
+	applyFilter()
+
 	statusLabel := widget.NewLabel("")
 
 	var list *widget.List
@@ -61,7 +86,7 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 		func() int {
 			mu.Lock()
 			defer mu.Unlock()
-			return len(current)
+			return len(filtered)
 		},
 		func() fyne.CanvasObject {
 			img := &canvas.Image{}
@@ -73,11 +98,11 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 		},
 		func(id widget.ListItemID, obj fyne.CanvasObject) {
 			mu.Lock()
-			if id >= len(current) {
+			if id >= len(filtered) {
 				mu.Unlock()
 				return
 			}
-			entry := current[id]
+			entry := filtered[id]
 			mu.Unlock()
 
 			box := obj.(*fyne.Container)
@@ -102,16 +127,61 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 	emptyLabel := widget.NewLabel("No history yet — start copying something!")
 	emptyLabel.Alignment = fyne.TextAlignCenter
 
+	noResultsLabel := widget.NewLabel("No results for this search.")
+	noResultsLabel.Alignment = fyne.TextAlignCenter
+	noResultsLabel.Hide()
+
 	refreshEmpty := func() {
 		mu.Lock()
-		empty := len(current) == 0
+		totalEmpty := len(current) == 0
+		filteredEmpty := len(filtered) == 0
 		mu.Unlock()
-		if empty {
+
+		if totalEmpty {
 			emptyLabel.Show()
+			noResultsLabel.Hide()
+		} else if filteredEmpty {
+			emptyLabel.Hide()
+			noResultsLabel.Show()
 		} else {
 			emptyLabel.Hide()
+			noResultsLabel.Hide()
 		}
 	}
+
+	// Search bar: entry + toggle button.
+	searchEntry := widget.NewEntry()
+	searchEntry.SetPlaceHolder("Search…")
+	searchEntry.Hide()
+
+	searchEntry.OnChanged = func(q string) {
+		mu.Lock()
+		query = q
+		applyFilter()
+		mu.Unlock()
+		list.Refresh()
+		refreshEmpty()
+	}
+
+	searchVisible := false
+	var searchBtn *widget.Button
+	searchBtn = widget.NewButtonWithIcon("", theme.SearchIcon(), func() {
+		searchVisible = !searchVisible
+		if searchVisible {
+			searchEntry.Show()
+			w.Canvas().Focus(searchEntry)
+		} else {
+			searchEntry.SetText("")
+			searchEntry.Hide()
+			mu.Lock()
+			query = ""
+			applyFilter()
+			mu.Unlock()
+			list.Refresh()
+			refreshEmpty()
+		}
+		_ = searchBtn // referenced to avoid unused warning
+	})
 
 	// showMain restores the main clipboard list screen.
 	var showMain func()
@@ -121,6 +191,8 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 			statusLabel.SetText("")
 			mu.Lock()
 			current = nil
+			query = ""
+			applyFilter()
 			mu.Unlock()
 			list.Refresh()
 			refreshEmpty()
@@ -135,11 +207,20 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 		})
 	})
 
-	mainContent := container.NewBorder(
+	header := container.NewBorder(
+		nil, nil,
 		widget.NewLabel("Select an entry to copy:"),
+		searchBtn,
+		searchEntry,
+	)
+
+	mainContent := container.NewBorder(
+		container.NewVBox(
+			header,
+		),
 		container.NewBorder(nil, nil, nil, settingsBtn, statusLabel),
 		nil, nil,
-		container.NewStack(list, container.NewCenter(emptyLabel)),
+		container.NewStack(list, container.NewCenter(emptyLabel), container.NewCenter(noResultsLabel)),
 	)
 
 	showMain = func() {
@@ -147,7 +228,20 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 		w.SetContent(mainContent)
 		w.Canvas().SetOnTypedKey(func(ev *fyne.KeyEvent) {
 			if ev.Name == fyne.KeyEscape {
-				w.Close()
+				if query != "" || searchVisible {
+					// Clear search first.
+					searchEntry.SetText("")
+					searchEntry.Hide()
+					searchVisible = false
+					mu.Lock()
+					query = ""
+					applyFilter()
+					mu.Unlock()
+					list.Refresh()
+					refreshEmpty()
+				} else {
+					w.Close()
+				}
 			}
 		})
 		refreshEmpty()
@@ -155,11 +249,11 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 
 	list.OnSelected = func(id widget.ListItemID) {
 		mu.Lock()
-		if id >= len(current) {
+		if id >= len(filtered) {
 			mu.Unlock()
 			return
 		}
-		entry := current[id]
+		entry := filtered[id]
 		mu.Unlock()
 
 		writeToClipboard(w, entry)
@@ -181,15 +275,17 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 					return
 				}
 				mu.Lock()
-				filtered := current[:0]
+				deduped := current[:0]
 				for _, e := range current {
 					if !(e.Type == entry.Type && e.Content == entry.Content) {
-						filtered = append(filtered, e)
+						deduped = append(deduped, e)
 					}
 				}
-				current = append([]history.ClipboardEntry{entry}, filtered...)
+				current = append([]history.ClipboardEntry{entry}, deduped...)
+				applyFilter()
 				mu.Unlock()
 				list.Refresh()
+				refreshEmpty()
 			case _, ok := <-focusReqs:
 				if !ok {
 					return
@@ -215,6 +311,21 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 	a.Run()
 
 	return selections, nil
+}
+
+// fuzzyMatch returns true if all runes of pattern appear in target in order,
+// case-insensitive.
+func fuzzyMatch(pattern, target string) bool {
+	pattern = strings.ToLower(pattern)
+	target = strings.ToLower(target)
+	pi := 0
+	prunes := []rune(pattern)
+	for _, r := range target {
+		if pi < len(prunes) && unicode.ToLower(r) == prunes[pi] {
+			pi++
+		}
+	}
+	return pi == len(prunes)
 }
 
 // buildSettingsContent returns the settings screen content for in-window navigation.
