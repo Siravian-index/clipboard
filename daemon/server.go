@@ -34,24 +34,24 @@ const (
 )
 
 type serverMsg struct {
-	Type  msgType  `json:"type"`
-	Items []string `json:"items,omitempty"`
-	Item  string   `json:"item,omitempty"`
+	Type  msgType                  `json:"type"`
+	Items []history.ClipboardEntry `json:"items,omitempty"`
+	Item  *history.ClipboardEntry  `json:"item,omitempty"`
 }
 
 type clientMsg struct {
-	Type msgType `json:"type"`
-	Item string  `json:"item,omitempty"`
+	Type    msgType `json:"type"`
+	EntryID int64   `json:"entry_id,omitempty"`
 }
 
 // Server holds the clipboard history, watcher, and a list of active client channels for streaming.
 type Server struct {
-	hist    history.History
-	watch   watcher.Watcher
+	hist     history.History
+	watch    watcher.Watcher
 	sockPath string
 
 	mu      sync.Mutex
-	clients map[chan string]struct{}
+	clients map[chan history.ClipboardEntry]struct{}
 }
 
 // NewServer creates a Server using config from disk, with SQLiteHistory and a 500ms PollingWatcher.
@@ -61,31 +61,31 @@ func NewServer() *Server {
 		log.Printf("failed to load config, using defaults: %v", err)
 	}
 
-	dbPath, err := ensureDataPath()
+	dbPath, imageDir, err := ensureDataPaths()
 	if err != nil {
 		log.Fatalf("failed to prepare data directory: %v", err)
 	}
 
-	hist, err := history.NewSQLiteHistory(dbPath, cfg.MaxEntries)
+	hist, err := history.NewSQLiteHistory(dbPath, imageDir, cfg.MaxEntries)
 	if err != nil {
 		log.Fatalf("failed to open history database: %v", err)
 	}
 
 	return &Server{
 		hist:     hist,
-		watch:    watcher.NewPollingWatcher(500 * time.Millisecond),
+		watch:    watcher.NewPollingWatcher(500*time.Millisecond, imageDir, cfg.MaxImageSizeMB),
 		sockPath: os.Getenv("HOME") + socketPath,
-		clients:  make(map[chan string]struct{}),
+		clients:  make(map[chan history.ClipboardEntry]struct{}),
 	}
 }
 
 // Run starts the watcher, listens on the Unix socket, handles SIGHUP for config
 // reload, and blocks until SIGINT/SIGTERM.
 func (s *Server) Run() {
-	if err := s.watch.Start(func(content string) {
-		s.hist.Add(content)
-		log.Printf("captured: %.40s", content)
-		s.broadcast(content)
+	if err := s.watch.Start(func(entry history.ClipboardEntry) {
+		s.hist.Add(entry)
+		log.Printf("captured [%s]: %.40s", entry.Type, entry.Content)
+		s.broadcast(entry)
 	}); err != nil {
 		log.Fatalf("failed to start watcher: %v", err)
 	}
@@ -132,7 +132,7 @@ func (s *Server) Run() {
 	}
 }
 
-// reloadConfig reads config from disk and applies updated max_entries to the history.
+// reloadConfig reads config from disk and applies updated settings to the history.
 func (s *Server) reloadConfig() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -145,41 +145,42 @@ func (s *Server) reloadConfig() {
 	log.Printf("SIGHUP: config reloaded (max_entries=%d)", cfg.MaxEntries)
 }
 
-// broadcast sends a new item to all connected clients.
-func (s *Server) broadcast(item string) {
+// broadcast sends a new entry to all connected clients.
+func (s *Server) broadcast(entry history.ClipboardEntry) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for ch := range s.clients {
 		select {
-		case ch <- item:
+		case ch <- entry:
 		default:
 		}
 	}
 }
 
-func (s *Server) subscribe() chan string {
-	ch := make(chan string, 16)
+func (s *Server) subscribe() chan history.ClipboardEntry {
+	ch := make(chan history.ClipboardEntry, 16)
 	s.mu.Lock()
 	s.clients[ch] = struct{}{}
 	s.mu.Unlock()
 	return ch
 }
 
-func (s *Server) unsubscribe(ch chan string) {
+func (s *Server) unsubscribe(ch chan history.ClipboardEntry) {
 	s.mu.Lock()
 	delete(s.clients, ch)
 	s.mu.Unlock()
 	close(ch)
 }
 
-// handleConn sends the current history, streams new items, then waits for the client's selection.
+// handleConn sends the current history, streams new entries, then waits for the client's selection.
 func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
 
 	ch := s.subscribe()
 	defer s.unsubscribe(ch)
 
-	init, _ := json.Marshal(serverMsg{Type: msgInit, Items: s.hist.List()})
+	items := s.hist.List()
+	init, _ := json.Marshal(serverMsg{Type: msgInit, Items: items})
 	if _, err := conn.Write(append(init, '\n')); err != nil {
 		log.Printf("failed to send init: %v", err)
 		return
@@ -200,11 +201,11 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	for {
 		select {
-		case item, ok := <-ch:
+		case entry, ok := <-ch:
 			if !ok {
 				return
 			}
-			data, _ := json.Marshal(serverMsg{Type: msgAdd, Item: item})
+			data, _ := json.Marshal(serverMsg{Type: msgAdd, Item: &entry})
 			if _, err := conn.Write(append(data, '\n')); err != nil {
 				return
 			}
@@ -214,7 +215,7 @@ func (s *Server) handleConn(conn net.Conn) {
 			}
 			switch msg.Type {
 			case msgSelect:
-				log.Printf("selected: %.40s", msg.Item)
+				log.Printf("selected entry id=%d", msg.EntryID)
 			case msgClear:
 				s.hist.Clear()
 				clipboard.Write(clipboard.FmtText, []byte{})
@@ -231,12 +232,17 @@ func dataDir() string {
 	return filepath.Join(os.Getenv("HOME"), ".local", "share", "clipboard-manager")
 }
 
-func ensureDataPath() (string, error) {
+func ensureDataPaths() (dbPath, imageDir string, err error) {
 	dir := dataDir()
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return "", err
+	if err = os.MkdirAll(dir, 0700); err != nil {
+		return
 	}
-	return filepath.Join(dir, "history.db"), nil
+	imageDir, err = history.EnsureImageDir(dir)
+	if err != nil {
+		return
+	}
+	dbPath = filepath.Join(dir, "history.db")
+	return
 }
 
 func pidFilePath() string {

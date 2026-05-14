@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 
+	"github.com/david-pena/clipboard/history"
 	"github.com/david-pena/clipboard/ui"
 )
 
@@ -25,14 +26,14 @@ const (
 )
 
 type serverMsg struct {
-	Type  msgType  `json:"type"`
-	Items []string `json:"items,omitempty"`
-	Item  string   `json:"item,omitempty"`
+	Type  msgType                  `json:"type"`
+	Items []history.ClipboardEntry `json:"items,omitempty"`
+	Item  *history.ClipboardEntry  `json:"item,omitempty"`
 }
 
 type clientMsg struct {
-	Type msgType `json:"type"`
-	Item string  `json:"item,omitempty"`
+	Type    msgType `json:"type"`
+	EntryID int64   `json:"entry_id,omitempty"`
 }
 
 // Run connects to the daemon, shows the Fyne picker with live updates,
@@ -66,13 +67,13 @@ func Run() {
 	if !scanner.Scan() {
 		log.Fatalf("failed to read init message from daemon")
 	}
-	var init serverMsg
-	if err := json.Unmarshal(scanner.Bytes(), &init); err != nil || init.Type != msgInit {
+	var initMsg serverMsg
+	if err := json.Unmarshal(scanner.Bytes(), &initMsg); err != nil || initMsg.Type != msgInit {
 		log.Fatalf("unexpected init message: %s", scanner.Bytes())
 	}
 
 	// Stream subsequent add messages into the updates channel.
-	updates := make(chan string, 32)
+	updates := make(chan history.ClipboardEntry, 32)
 	go func() {
 		defer close(updates)
 		for scanner.Scan() {
@@ -80,8 +81,8 @@ func Run() {
 			if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
 				continue
 			}
-			if msg.Type == msgAdd {
-				updates <- msg.Item
+			if msg.Type == msgAdd && msg.Item != nil {
+				updates <- *msg.Item
 			}
 		}
 	}()
@@ -91,15 +92,15 @@ func Run() {
 		conn.Write(append(msg, '\n'))
 	}
 
-	selections, err := ui.NewFyneUI().Show(init.Items, updates, onClear, focusReqs)
+	selections, err := ui.NewFyneUI().Show(initMsg.Items, updates, onClear, focusReqs)
 	if err != nil {
 		msg, _ := json.Marshal(clientMsg{Type: msgCancel})
 		conn.Write(append(msg, '\n'))
 		return
 	}
 
-	for item := range selections {
-		msg, _ := json.Marshal(clientMsg{Type: msgSelect, Item: item})
+	for entry := range selections {
+		msg, _ := json.Marshal(clientMsg{Type: msgSelect, EntryID: entry.ID})
 		conn.Write(append(msg, '\n'))
 	}
 
@@ -116,7 +117,11 @@ func focusExistingInstance(sockPath string) bool {
 		return false
 	}
 	defer conn.Close()
-	msg, _ := json.Marshal(clientMsg{Type: msgFocus})
+	// focusMsg uses a separate local type to avoid import cycle with daemon.
+	type focusMsg struct {
+		Type string `json:"type"`
+	}
+	msg, _ := json.Marshal(focusMsg{Type: "focus"})
 	conn.Write(append(msg, '\n'))
 	return true
 }
@@ -149,11 +154,13 @@ func handleFocusConn(conn net.Conn, focusReqs chan<- struct{}) {
 	defer conn.Close()
 	scanner := bufio.NewScanner(conn)
 	for scanner.Scan() {
-		var msg clientMsg
+		var msg struct {
+			Type string `json:"type"`
+		}
 		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
 			continue
 		}
-		if msg.Type == msgFocus {
+		if msg.Type == "focus" {
 			select {
 			case focusReqs <- struct{}{}:
 			default:

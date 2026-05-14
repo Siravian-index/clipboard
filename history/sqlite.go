@@ -3,6 +3,8 @@ package history
 import (
 	"database/sql"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -10,14 +12,15 @@ import (
 )
 
 type SQLiteHistory struct {
-	db      *sql.DB
-	maxSize int
-	mu      sync.Mutex
+	db       *sql.DB
+	imageDir string
+	maxSize  int
+	mu       sync.Mutex
 }
 
 // NewSQLiteHistory opens (or creates) a SQLite database at dbPath and returns
-// a History backed by it. The schema is created if it does not exist.
-func NewSQLiteHistory(dbPath string, maxSize int) (*SQLiteHistory, error) {
+// a History backed by it. imageDir is where image files are stored.
+func NewSQLiteHistory(dbPath, imageDir string, maxSize int) (*SQLiteHistory, error) {
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, err
@@ -25,8 +28,9 @@ func NewSQLiteHistory(dbPath string, maxSize int) (*SQLiteHistory, error) {
 
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS entries (
-			id        INTEGER PRIMARY KEY AUTOINCREMENT,
-			content   TEXT    NOT NULL,
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			content    TEXT    NOT NULL,
+			type       TEXT    NOT NULL DEFAULT 'text',
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)
 	`)
@@ -35,25 +39,34 @@ func NewSQLiteHistory(dbPath string, maxSize int) (*SQLiteHistory, error) {
 		return nil, err
 	}
 
-	return &SQLiteHistory{db: db, maxSize: maxSize}, nil
+	// Migrate existing databases that lack the type column.
+	_, _ = db.Exec(`ALTER TABLE entries ADD COLUMN type TEXT NOT NULL DEFAULT 'text'`)
+
+	return &SQLiteHistory{db: db, imageDir: imageDir, maxSize: maxSize}, nil
 }
 
-func (h *SQLiteHistory) Add(entry string) {
+func (h *SQLiteHistory) ImageDir() string {
+	return h.imageDir
+}
+
+func (h *SQLiteHistory) Add(entry ClipboardEntry) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	entry = strings.TrimSpace(entry)
-	if entry == "" {
-		return
+	if entry.Type == EntryTypeText {
+		entry.Content = strings.TrimSpace(entry.Content)
+		if entry.Content == "" {
+			return
+		}
 	}
 
-	// Remove any existing occurrence so the entry moves to the top.
-	if _, err := h.db.Exec(`DELETE FROM entries WHERE content = ?`, entry); err != nil {
+	// Remove existing occurrence so the entry moves to the top.
+	if _, err := h.db.Exec(`DELETE FROM entries WHERE content = ? AND type = ?`, entry.Content, string(entry.Type)); err != nil {
 		log.Printf("sqlite: failed to remove duplicate: %v", err)
 		return
 	}
 
-	if _, err := h.db.Exec(`INSERT INTO entries (content) VALUES (?)`, entry); err != nil {
+	if _, err := h.db.Exec(`INSERT INTO entries (content, type) VALUES (?, ?)`, entry.Content, string(entry.Type)); err != nil {
 		log.Printf("sqlite: failed to insert entry: %v", err)
 		return
 	}
@@ -69,26 +82,43 @@ func (h *SQLiteHistory) Add(entry string) {
 	}
 }
 
-func (h *SQLiteHistory) List() []string {
-	rows, err := h.db.Query(`SELECT content FROM entries ORDER BY id DESC`)
+func (h *SQLiteHistory) List() []ClipboardEntry {
+	rows, err := h.db.Query(`SELECT id, content, type FROM entries ORDER BY id DESC`)
 	if err != nil {
 		log.Printf("sqlite: failed to query entries: %v", err)
 		return nil
 	}
 	defer rows.Close()
 
-	var entries []string
+	var entries []ClipboardEntry
 	for rows.Next() {
-		var content string
-		if err := rows.Scan(&content); err != nil {
+		var e ClipboardEntry
+		var typ string
+		if err := rows.Scan(&e.ID, &e.Content, &typ); err != nil {
 			continue
 		}
-		entries = append(entries, content)
+		e.Type = EntryType(typ)
+		entries = append(entries, e)
 	}
 	return entries
 }
 
 func (h *SQLiteHistory) Clear() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	// Collect image file paths before deleting rows.
+	rows, err := h.db.Query(`SELECT content FROM entries WHERE type = 'image'`)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var path string
+			if rows.Scan(&path) == nil {
+				_ = os.Remove(path)
+			}
+		}
+	}
+
 	if _, err := h.db.Exec(`DELETE FROM entries`); err != nil {
 		log.Printf("sqlite: failed to clear entries: %v", err)
 	}
@@ -102,4 +132,10 @@ func (h *SQLiteHistory) SetMaxSize(maxSize int) {
 
 func (h *SQLiteHistory) Close() error {
 	return h.db.Close()
+}
+
+// EnsureImageDir creates the image storage directory and returns its path.
+func EnsureImageDir(dataDir string) (string, error) {
+	dir := filepath.Join(dataDir, "images")
+	return dir, os.MkdirAll(dir, 0700)
 }

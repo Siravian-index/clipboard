@@ -1,7 +1,7 @@
 package history
 
 type History interface {
-	Add(entry string)
-	List() []string
+	Add(entry ClipboardEntry)
+	List() []ClipboardEntry
 	Clear()
 }

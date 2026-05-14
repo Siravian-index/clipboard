@@ -24,7 +24,7 @@ func testServer(t *testing.T) (*Server, string) {
 		hist:     history.NewMemoryHistory(50),
 		watch:    &noopWatcher{},
 		sockPath: sockPath,
-		clients:  make(map[chan string]struct{}),
+		clients:  make(map[chan history.ClipboardEntry]struct{}),
 	}
 	return s, sockPath
 }
@@ -84,8 +84,8 @@ func sendMsg(t *testing.T, conn net.Conn, msg clientMsg) {
 
 func TestServer_SendsInitOnConnect(t *testing.T) {
 	s, sockPath := testServer(t)
-	s.hist.Add("first")
-	s.hist.Add("second")
+	s.hist.Add(history.ClipboardEntry{Type: history.EntryTypeText, Content: "first"})
+	s.hist.Add(history.ClipboardEntry{Type: history.EntryTypeText, Content: "second"})
 	stop := startListening(t, s)
 	defer stop()
 
@@ -101,8 +101,8 @@ func TestServer_SendsInitOnConnect(t *testing.T) {
 	if len(msg.Items) != 2 {
 		t.Errorf("expected 2 items in init, got %d", len(msg.Items))
 	}
-	if msg.Items[0] != "second" {
-		t.Errorf("expected most recent item first, got %q", msg.Items[0])
+	if msg.Items[0].Content != "second" {
+		t.Errorf("expected most recent item first, got %q", msg.Items[0].Content)
 	}
 }
 
@@ -118,8 +118,9 @@ func TestServer_StreamsNewItemsToClient(t *testing.T) {
 	readMsg(t, scanner) // consume init
 
 	// Simulate a new clipboard entry arriving while the client is connected.
-	s.hist.Add("live item")
-	s.broadcast("live item")
+	entry := history.ClipboardEntry{Type: history.EntryTypeText, Content: "live item"}
+	s.hist.Add(entry)
+	s.broadcast(entry)
 
 	done := make(chan serverMsg, 1)
 	go func() {
@@ -131,8 +132,8 @@ func TestServer_StreamsNewItemsToClient(t *testing.T) {
 		if msg.Type != msgAdd {
 			t.Errorf("expected add message, got %q", msg.Type)
 		}
-		if msg.Item != "live item" {
-			t.Errorf("expected 'live item', got %q", msg.Item)
+		if msg.Item == nil || msg.Item.Content != "live item" {
+			t.Errorf("expected 'live item', got %v", msg.Item)
 		}
 	case <-time.After(2 * time.Second):
 		t.Error("timed out waiting for streamed item")
@@ -141,7 +142,7 @@ func TestServer_StreamsNewItemsToClient(t *testing.T) {
 
 func TestServer_HandlesSelectMessage(t *testing.T) {
 	s, sockPath := testServer(t)
-	s.hist.Add("item one")
+	s.hist.Add(history.ClipboardEntry{Type: history.EntryTypeText, Content: "item one"})
 	stop := startListening(t, s)
 	defer stop()
 
@@ -151,7 +152,7 @@ func TestServer_HandlesSelectMessage(t *testing.T) {
 	scanner := bufio.NewScanner(conn)
 	readMsg(t, scanner) // consume init
 
-	sendMsg(t, conn, clientMsg{Type: msgSelect, Item: "item one"})
+	sendMsg(t, conn, clientMsg{Type: msgSelect, EntryID: 1})
 	sendMsg(t, conn, clientMsg{Type: msgCancel})
 
 	// Server should close the connection cleanly — verify by waiting for EOF.
@@ -171,8 +172,8 @@ func TestServer_HandlesSelectMessage(t *testing.T) {
 
 func TestServer_HandlesClearMessage(t *testing.T) {
 	s, sockPath := testServer(t)
-	s.hist.Add("a")
-	s.hist.Add("b")
+	s.hist.Add(history.ClipboardEntry{Type: history.EntryTypeText, Content: "a"})
+	s.hist.Add(history.ClipboardEntry{Type: history.EntryTypeText, Content: "b"})
 	stop := startListening(t, s)
 	defer stop()
 
@@ -195,9 +196,9 @@ func TestServer_HandlesClearMessage(t *testing.T) {
 
 func TestServer_MultipleSelectsBeforeCancel(t *testing.T) {
 	s, sockPath := testServer(t)
-	s.hist.Add("one")
-	s.hist.Add("two")
-	s.hist.Add("three")
+	s.hist.Add(history.ClipboardEntry{Type: history.EntryTypeText, Content: "one"})
+	s.hist.Add(history.ClipboardEntry{Type: history.EntryTypeText, Content: "two"})
+	s.hist.Add(history.ClipboardEntry{Type: history.EntryTypeText, Content: "three"})
 	stop := startListening(t, s)
 	defer stop()
 
@@ -207,8 +208,8 @@ func TestServer_MultipleSelectsBeforeCancel(t *testing.T) {
 	scanner := bufio.NewScanner(conn)
 	readMsg(t, scanner) // consume init
 
-	sendMsg(t, conn, clientMsg{Type: msgSelect, Item: "one"})
-	sendMsg(t, conn, clientMsg{Type: msgSelect, Item: "two"})
+	sendMsg(t, conn, clientMsg{Type: msgSelect, EntryID: 1})
+	sendMsg(t, conn, clientMsg{Type: msgSelect, EntryID: 2})
 	sendMsg(t, conn, clientMsg{Type: msgCancel})
 
 	done := make(chan struct{})
@@ -228,8 +229,8 @@ func TestServer_MultipleSelectsBeforeCancel(t *testing.T) {
 // noopWatcher satisfies the watcher.Watcher interface without doing anything.
 type noopWatcher struct{}
 
-func (n *noopWatcher) Start(_ func(string)) error { return nil }
-func (n *noopWatcher) Stop() error                { return nil }
-func (n *noopWatcher) Reset()                     {}
+func (n *noopWatcher) Start(_ func(history.ClipboardEntry)) error { return nil }
+func (n *noopWatcher) Stop() error                                { return nil }
+func (n *noopWatcher) Reset()                                     {}
 
 var _ watcher.Watcher = (*noopWatcher)(nil)

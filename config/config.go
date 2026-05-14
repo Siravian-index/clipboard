@@ -6,17 +6,22 @@ import (
 	"path/filepath"
 )
 
-const defaultMaxEntries = 50
+const (
+	defaultMaxEntries    = 50
+	defaultMaxImageSizeMB = 10
+)
 
 type Config struct {
-	MaxEntries      int  `json:"max_entries"`
-	KeepWindowOpen  bool `json:"keep_window_open"`
+	MaxEntries     int  `json:"max_entries"`
+	KeepWindowOpen bool `json:"keep_window_open"`
+	MaxImageSizeMB int  `json:"max_image_size_mb"`
 }
 
 func Default() *Config {
 	return &Config{
 		MaxEntries:     defaultMaxEntries,
 		KeepWindowOpen: true,
+		MaxImageSizeMB: defaultMaxImageSizeMB,
 	}
 }
 

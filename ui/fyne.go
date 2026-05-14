@@ -1,17 +1,27 @@
 package ui
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
+	"image"
+	_ "image/png"
+	"os"
 	"strings"
+	"sync"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/data/binding"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
+	"golang.design/x/clipboard"
+
 	"github.com/david-pena/clipboard/config"
+	"github.com/david-pena/clipboard/history"
 )
 
 type FyneUI struct{}
@@ -21,8 +31,8 @@ func NewFyneUI() *FyneUI {
 }
 
 // Show displays the clipboard history picker. It returns a channel that emits
-// each item the user selects; the channel is closed when the window is dismissed.
-func (f *FyneUI) Show(items []string, updates <-chan string, onClear func(), focusReqs <-chan struct{}) (<-chan string, error) {
+// each entry the user selects; the channel is closed when the window is dismissed.
+func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.ClipboardEntry, onClear func(), focusReqs <-chan struct{}) (<-chan history.ClipboardEntry, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		cfg = config.Default()
@@ -32,7 +42,7 @@ func (f *FyneUI) Show(items []string, updates <-chan string, onClear func(), foc
 		return nil, errors.New("no history entries")
 	}
 
-	selections := make(chan string, 16)
+	selections := make(chan history.ClipboardEntry, 16)
 
 	a := app.New()
 	w := a.NewWindow("Clipboard History")
@@ -40,42 +50,71 @@ func (f *FyneUI) Show(items []string, updates <-chan string, onClear func(), foc
 	w.SetFixedSize(true)
 	w.CenterOnScreen()
 
-	data := binding.NewStringList()
-	_ = data.Set(items)
+	var mu sync.Mutex
+	current := make([]history.ClipboardEntry, len(items))
+	copy(current, items)
 
 	statusLabel := widget.NewLabel("")
 
-	list := widget.NewListWithData(
-		data,
-		func() fyne.CanvasObject {
-			return widget.NewLabel("")
+	var list *widget.List
+	list = widget.NewList(
+		func() int {
+			mu.Lock()
+			defer mu.Unlock()
+			return len(current)
 		},
-		func(item binding.DataItem, o fyne.CanvasObject) {
-			s, _ := item.(binding.String).Get()
-			text := strings.ReplaceAll(s, "\n", " ")
-			text = strings.Join(strings.Fields(text), " ")
-			if len([]rune(text)) > 80 {
-				text = string([]rune(text)[:80]) + "…"
+		func() fyne.CanvasObject {
+			img := &canvas.Image{}
+			img.FillMode = canvas.ImageFillContain
+			img.SetMinSize(fyne.NewSize(60, 60))
+			lbl := widget.NewLabel("")
+			lbl.Truncation = fyne.TextTruncateEllipsis
+			return container.NewBorder(nil, nil, img, nil, lbl)
+		},
+		func(id widget.ListItemID, obj fyne.CanvasObject) {
+			mu.Lock()
+			if id >= len(current) {
+				mu.Unlock()
+				return
 			}
-			o.(*widget.Label).SetText(text)
+			entry := current[id]
+			mu.Unlock()
+
+			box := obj.(*fyne.Container)
+			img := box.Objects[1].(*canvas.Image)
+			lbl := box.Objects[0].(*widget.Label)
+
+			if entry.Type == history.EntryTypeImage {
+				img.File = entry.Content
+				img.Resource = nil
+				img.Show()
+				lbl.SetText(imageLabel(entry.Content))
+			} else {
+				img.File = ""
+				img.Resource = theme.FileTextIcon()
+				img.Hide()
+				lbl.SetText(truncateText(entry.Content))
+			}
+			img.Refresh()
 		},
 	)
 
 	list.OnSelected = func(id widget.ListItemID) {
-		all, _ := data.Get()
-		if id < len(all) {
-			item := all[id]
-			w.Clipboard().SetContent(item)
-			selections <- item
-			preview := strings.ReplaceAll(item, "\n", " ")
-			preview = strings.Join(strings.Fields(preview), " ")
-			if len([]rune(preview)) > 50 {
-				preview = string([]rune(preview)[:50]) + "…"
-			}
-			statusLabel.SetText("Copied: " + preview)
-			if !cfg.KeepWindowOpen {
-				w.Close()
-			}
+		mu.Lock()
+		if id >= len(current) {
+			mu.Unlock()
+			return
+		}
+		entry := current[id]
+		mu.Unlock()
+
+		writeToClipboard(w, entry)
+		selections <- entry
+
+		preview := previewText(entry)
+		statusLabel.SetText("Copied: " + preview)
+		if !cfg.KeepWindowOpen {
+			w.Close()
 		}
 		list.Unselect(id)
 	}
@@ -83,18 +122,20 @@ func (f *FyneUI) Show(items []string, updates <-chan string, onClear func(), foc
 	go func() {
 		for {
 			select {
-			case item, ok := <-updates:
+			case entry, ok := <-updates:
 				if !ok {
 					return
 				}
-				current, _ := data.Get()
+				mu.Lock()
 				filtered := current[:0]
 				for _, e := range current {
-					if e != item {
+					if !(e.Type == entry.Type && e.Content == entry.Content) {
 						filtered = append(filtered, e)
 					}
 				}
-				_ = data.Set(append([]string{item}, filtered...))
+				current = append([]history.ClipboardEntry{entry}, filtered...)
+				mu.Unlock()
+				list.Refresh()
 			case _, ok := <-focusReqs:
 				if !ok {
 					return
@@ -108,23 +149,26 @@ func (f *FyneUI) Show(items []string, updates <-chan string, onClear func(), foc
 	emptyLabel.Alignment = fyne.TextAlignCenter
 
 	refreshEmpty := func() {
-		all, _ := data.Get()
-		if len(all) == 0 {
+		mu.Lock()
+		empty := len(current) == 0
+		mu.Unlock()
+		if empty {
 			emptyLabel.Show()
 		} else {
 			emptyLabel.Hide()
 		}
 	}
-	data.AddListener(binding.NewDataListener(func() {
-		refreshEmpty()
-	}))
 
 	settingsBtn := widget.NewButton("⚙", func() {
 		onClearUI := func() {
 			statusLabel.SetText("")
+			mu.Lock()
+			current = nil
+			mu.Unlock()
+			list.Refresh()
 			refreshEmpty()
 		}
-		showSettings(a, w, cfg, data, onClear, onClearUI)
+		showSettings(a, w, cfg, onClear, onClearUI)
 	})
 
 	w.SetOnClosed(func() {
@@ -151,17 +195,83 @@ func (f *FyneUI) Show(items []string, updates <-chan string, onClear func(), foc
 	return selections, nil
 }
 
-func showSettings(a fyne.App, parent fyne.Window, cfg *config.Config, data binding.StringList, onClear func(), onClearUI func()) {
+// writeToClipboard writes the entry content to the system clipboard.
+func writeToClipboard(w fyne.Window, entry history.ClipboardEntry) {
+	if entry.Type == history.EntryTypeImage {
+		data, err := os.ReadFile(entry.Content)
+		if err != nil {
+			return
+		}
+		if err := clipboard.Init(); err != nil {
+			return
+		}
+		clipboard.Write(clipboard.FmtImage, data)
+		return
+	}
+	w.Clipboard().SetContent(entry.Content)
+}
+
+// imageLabel returns a short display string for an image entry.
+func imageLabel(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "Image"
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return "Image"
+	}
+	return fmt.Sprintf("Image (%d×%d)", cfg.Width, cfg.Height)
+}
+
+// truncateText collapses whitespace and caps at 80 runes.
+func truncateText(s string) string {
+	text := strings.ReplaceAll(s, "\n", " ")
+	text = strings.Join(strings.Fields(text), " ")
+	if len([]rune(text)) > 80 {
+		text = string([]rune(text)[:80]) + "…"
+	}
+	return text
+}
+
+// previewText returns a short preview string for the status bar.
+func previewText(entry history.ClipboardEntry) string {
+	if entry.Type == history.EntryTypeImage {
+		return imageLabel(entry.Content)
+	}
+	text := strings.ReplaceAll(entry.Content, "\n", " ")
+	text = strings.Join(strings.Fields(text), " ")
+	if len([]rune(text)) > 50 {
+		text = string([]rune(text)[:50]) + "…"
+	}
+	return text
+}
+
+func showSettings(a fyne.App, parent fyne.Window, cfg *config.Config, onClear func(), onClearUI func()) {
 	sw := a.NewWindow("Settings")
-	sw.Resize(fyne.NewSize(360, 280))
+	sw.Resize(fyne.NewSize(360, 320))
 	sw.SetFixedSize(true)
 	sw.CenterOnScreen()
 
-	maxEntriesVal := binding.NewFloat()
-	_ = maxEntriesVal.Set(float64(cfg.MaxEntries))
-	maxEntriesLabel := widget.NewLabelWithData(binding.FloatToStringWithFormat(maxEntriesVal, "Max entries: %.0f"))
-	maxEntriesSlider := widget.NewSliderWithData(10, 500, maxEntriesVal)
+	maxEntriesVal := newFloat(float64(cfg.MaxEntries))
+	maxEntriesLabel := widget.NewLabel(fmt.Sprintf("Max entries: %d", cfg.MaxEntries))
+	maxEntriesSlider := widget.NewSlider(10, 500)
 	maxEntriesSlider.Step = 10
+	maxEntriesSlider.Value = float64(cfg.MaxEntries)
+	maxEntriesSlider.OnChanged = func(v float64) {
+		*maxEntriesVal = v
+		maxEntriesLabel.SetText(fmt.Sprintf("Max entries: %d", int(v)))
+	}
+
+	maxImageVal := newFloat(float64(cfg.MaxImageSizeMB))
+	maxImageLabel := widget.NewLabel(fmt.Sprintf("Max image size: %d MB", cfg.MaxImageSizeMB))
+	maxImageSlider := widget.NewSlider(1, 50)
+	maxImageSlider.Step = 1
+	maxImageSlider.Value = float64(cfg.MaxImageSizeMB)
+	maxImageSlider.OnChanged = func(v float64) {
+		*maxImageVal = v
+		maxImageLabel.SetText(fmt.Sprintf("Max image size: %d MB", int(v)))
+	}
 
 	keepOpenCheck := widget.NewCheck("Keep window open after selection", func(v bool) {
 		cfg.KeepWindowOpen = v
@@ -174,7 +284,6 @@ func showSettings(a fyne.App, parent fyne.Window, cfg *config.Config, data bindi
 			"Delete all clipboard history entries?",
 			func(confirmed bool) {
 				if confirmed {
-					_ = data.Set([]string{})
 					if onClear != nil {
 						onClear()
 					}
@@ -188,13 +297,12 @@ func showSettings(a fyne.App, parent fyne.Window, cfg *config.Config, data bindi
 	})
 
 	saveBtn := widget.NewButton("Save", func() {
-		maxVal, _ := maxEntriesVal.Get()
-		cfg.MaxEntries = int(maxVal)
+		cfg.MaxEntries = int(*maxEntriesVal)
+		cfg.MaxImageSizeMB = int(*maxImageVal)
 		if err := cfg.Save(); err != nil {
 			dialog.ShowError(err, sw)
 			return
 		}
-		// Send SIGHUP to the daemon so it reloads max_entries.
 		sendSIGHUP()
 		sw.Close()
 	})
@@ -203,6 +311,10 @@ func showSettings(a fyne.App, parent fyne.Window, cfg *config.Config, data bindi
 		widget.NewLabel("History"),
 		maxEntriesLabel,
 		maxEntriesSlider,
+		widget.NewSeparator(),
+		widget.NewLabel("Images"),
+		maxImageLabel,
+		maxImageSlider,
 		widget.NewSeparator(),
 		widget.NewLabel("Behavior"),
 		keepOpenCheck,
@@ -214,4 +326,8 @@ func showSettings(a fyne.App, parent fyne.Window, cfg *config.Config, data bindi
 	))
 
 	sw.Show()
+}
+
+func newFloat(v float64) *float64 {
+	return &v
 }

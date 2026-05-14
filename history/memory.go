@@ -7,7 +7,7 @@ import (
 
 type MemoryHistory struct {
 	mu      sync.RWMutex
-	entries []string
+	entries []ClipboardEntry
 	maxSize int
 }
 
@@ -15,34 +15,45 @@ func NewMemoryHistory(maxSize int) *MemoryHistory {
 	return &MemoryHistory{maxSize: maxSize}
 }
 
-func (h *MemoryHistory) Add(entry string) {
+func (h *MemoryHistory) Add(entry ClipboardEntry) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	entry = strings.TrimSpace(entry)
-	if entry == "" {
-		return
+	if entry.Type == EntryTypeText {
+		entry.Content = strings.TrimSpace(entry.Content)
+		if entry.Content == "" {
+			return
+		}
 	}
 
 	// Remove existing occurrence anywhere in the list before prepending.
 	filtered := h.entries[:0]
 	for _, e := range h.entries {
-		if e != entry {
+		if !(e.Type == entry.Type && e.Content == entry.Content) {
 			filtered = append(filtered, e)
 		}
 	}
 
-	h.entries = append([]string{entry}, filtered...)
+	// Assign a simple incrementing ID based on current max.
+	var nextID int64 = 1
+	for _, e := range filtered {
+		if e.ID >= nextID {
+			nextID = e.ID + 1
+		}
+	}
+	entry.ID = nextID
+
+	h.entries = append([]ClipboardEntry{entry}, filtered...)
 	if len(h.entries) > h.maxSize {
 		h.entries = h.entries[:h.maxSize]
 	}
 }
 
-func (h *MemoryHistory) List() []string {
+func (h *MemoryHistory) List() []ClipboardEntry {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	result := make([]string, len(h.entries))
+	result := make([]ClipboardEntry, len(h.entries))
 	copy(result, h.entries)
 	return result
 }
