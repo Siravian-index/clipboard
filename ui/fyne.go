@@ -119,7 +119,7 @@ func (f *FyneUI) Show(items []string, updates <-chan string, onClear func(), foc
 		refreshEmpty()
 	}))
 
-	settingsBtn := widget.NewButton("⚙ Settings", func() {
+	settingsBtn := widget.NewButton("⚙", func() {
 		onClearUI := func() {
 			statusLabel.SetText("")
 			refreshEmpty()

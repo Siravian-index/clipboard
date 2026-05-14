@@ -123,6 +123,7 @@ type HotkeyListener interface {
   - Mostrar thumbnails en la UI del picker
   - Al seleccionar una imagen, devolverla al clipboard como imagen (no como ruta)
   - Considerar límite de tamaño y limpieza de imágenes huérfanas al hacer clear
+- [ ] Settings integrado en la ventana principal: reemplazar la segunda ventana de Settings por un panel lateral o vista inline dentro de la misma ventana, usando `container.NewAppTabs` o un layout con panel izquierdo (lista) / derecho (settings) para no romper el foco ni abrir ventanas adicionales.
 - [ ] Temas (colores): permitir al usuario cambiar el tema de la UI desde Settings. Fyne soporta `theme.DarkTheme()` y `theme.LightTheme()` nativamente, y permite temas personalizados implementando la interfaz `fyne.Theme`. Persistir la selección en `config.json` y aplicarla con `a.Settings().SetTheme()` al arrancar.
 - [ ] Icono de aplicación: diseñar un PNG (256×256), embeber con `fyne bundle` y asignarlo con `a.SetIcon()` para reemplazar el engranaje por defecto en alt-tab, barra de título y taskbar.
 - [ ] Detección de contraseñas y ofuscación: identificar entradas del historial que posiblemente sean contraseñas (heurística: sin espacios, longitud mínima, mezcla de caracteres, etc.) y mostrarlas ofuscadas en la UI (`••••••••`) con opción de revelar/ocultar por item.

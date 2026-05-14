@@ -230,5 +230,6 @@ type noopWatcher struct{}
 
 func (n *noopWatcher) Start(_ func(string)) error { return nil }
 func (n *noopWatcher) Stop() error                { return nil }
+func (n *noopWatcher) Reset()                     {}
 
 var _ watcher.Watcher = (*noopWatcher)(nil)
