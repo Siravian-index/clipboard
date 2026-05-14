@@ -16,7 +16,7 @@ en flujos naturales de navegación.
 | Settings button             | Ctrl+/   | Abrir el menú de settings                        | Solo abrir; para cerrar el usuario usa Escape                                                                                         |
 | Menú de ayuda               | Ctrl+H   | Abrir menú de ayuda con shortcuts disponibles    | Se usa Ctrl+H (Help) en lugar de `?` para poder interceptarlo globalmente sin importar si el focus está en un campo de texto o no. Imagen de referencia: `/docs/plan/shortcuts/shortcuts-menu` |
 | Lista de entries            | ↑ / ↓    | Navegar entre entries                            | —                                                                                                                                     |
-| Lista de entries            | Enter    | Copiar la entry seleccionada al clipboard        | —                                                                                                                                     |
+| Lista de entries            | Space    | Confirmar selección y copiar la entry al clipboard | Equivalente al OK/confirmar sobre la entry resaltada                                                                                |
 
 ---
 
@@ -28,7 +28,7 @@ en flujos naturales de navegación.
 4. Escribe "Libro de..."
 5. `↓` → mueve el foco a la lista
 6. `↓ / ↑` → navega entre resultados
-7. `Enter` → copia la entry seleccionada
+7. `Space` → confirma la selección y copia la entry al clipboard
 
 ---
 

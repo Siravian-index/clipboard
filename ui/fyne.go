@@ -245,7 +245,7 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 			{"Ctrl+/", "Open Settings"},
 			{"Ctrl+H", "Show this help"},
 			{"↑ / ↓", "Navigate entries"},
-			{"Space", "Copy selected entry"},
+			{"Space", "Confirm selection — copies the highlighted entry to clipboard"},
 			{"Escape", "Close search / close window"},
 		}
 
