@@ -93,6 +93,7 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 	selections := make(chan history.ClipboardEntry, 16)
 
 	a := app.New()
+	a.Settings().SetTheme(ThemeForName(cfg.Theme))
 	w := a.NewWindow("Clipboard History")
 	w.Resize(fyne.NewSize(500, 460))
 	w.SetFixedSize(true)
@@ -240,13 +241,14 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 
 		type row struct{ key, action string }
 		shortcuts := []row{
-			{"Ctrl+F", "Toggle search bar (filter stays active when closed)"},
+			{"Ctrl+F", "Toggle search bar"},
 			{"Ctrl+D", "Clear search input"},
 			{"Ctrl+/", "Open Settings"},
 			{"Ctrl+H", "Show this help"},
+			{"Ctrl+S", "Save settings"},
 			{"↑ / ↓", "Navigate entries"},
-			{"Space", "Confirm selection — copies the highlighted entry to clipboard"},
-			{"Escape", "Close search / close window"},
+			{"Space", "Confirm selection"},
+			{"Escape", "Close dialogs"},
 		}
 
 		rows := []fyne.CanvasObject{
@@ -291,7 +293,8 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 			list.Refresh()
 			refreshEmpty()
 		}
-		settingsContent, save := buildSettingsContent(w, cfg, onClear, onClearUI, func() { showMain() })
+		setTheme := func(name string) { a.Settings().SetTheme(ThemeForName(name)) }
+		settingsContent, save := buildSettingsContent(w, cfg, onClear, onClearUI, func() { showMain() }, setTheme)
 		settingsSave = save
 		w.SetTitle("Settings")
 		w.SetContent(settingsContent)
@@ -517,7 +520,33 @@ func fuzzyMatch(pattern, target string) bool {
 }
 
 // buildSettingsContent returns the settings screen content and a save function for in-window navigation.
-func buildSettingsContent(w fyne.Window, cfg *config.Config, onClear func(), onClearUI func(), goBack func()) (fyne.CanvasObject, func()) {
+func buildSettingsContent(w fyne.Window, cfg *config.Config, onClear func(), onClearUI func(), goBack func(), setTheme func(string)) (fyne.CanvasObject, func()) {
+	selectedTheme := cfg.Theme
+	themeLabels := make([]string, len(ThemeOptions))
+	themeKeys := make([]string, len(ThemeOptions))
+	for i, opt := range ThemeOptions {
+		themeLabels[i] = opt.Label
+		themeKeys[i] = opt.Key
+	}
+	themeSelect := widget.NewSelect(themeLabels, func(label string) {
+		for i, l := range themeLabels {
+			if l == label {
+				selectedTheme = themeKeys[i]
+				setTheme(selectedTheme)
+				break
+			}
+		}
+	})
+	for i, k := range themeKeys {
+		if k == cfg.Theme {
+			themeSelect.SetSelected(themeLabels[i])
+			break
+		}
+	}
+	if themeSelect.Selected == "" {
+		themeSelect.SetSelected(themeLabels[0])
+	}
+
 	maxEntriesVal := newFloat(float64(cfg.MaxEntries))
 	maxEntriesLabel := widget.NewLabel(fmt.Sprintf("Max entries: %d", cfg.MaxEntries))
 	maxEntriesSlider := widget.NewSlider(10, 500)
@@ -565,6 +594,7 @@ func buildSettingsContent(w fyne.Window, cfg *config.Config, onClear func(), onC
 	save := func() {
 		cfg.MaxEntries = int(*maxEntriesVal)
 		cfg.MaxImageSizeMB = int(*maxImageVal)
+		cfg.Theme = selectedTheme
 		if err := cfg.Save(); err != nil {
 			dialog.ShowError(err, w)
 			return
@@ -580,6 +610,10 @@ func buildSettingsContent(w fyne.Window, cfg *config.Config, onClear func(), onC
 	})
 
 	body := container.NewVBox(
+		widget.NewSeparator(),
+		widget.NewLabel("Appearance"),
+		widget.NewLabel("Theme"),
+		themeSelect,
 		widget.NewSeparator(),
 		widget.NewLabel("History"),
 		maxEntriesLabel,

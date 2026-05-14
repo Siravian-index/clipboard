@@ -116,14 +116,16 @@ type HotkeyListener interface {
 - [x] Live update: daemon hace streaming de nuevas entradas al cliente vía socket, UI de Fyne se refresca en tiempo real sin cerrar la ventana
 - [x] Persistencia del historial en disco (SQLite) — las entradas sobreviven reinicios del daemon
 - [x] Mantener la ventana abierta después de seleccionar un item — permite pegar múltiples entradas sin reabrir el picker
-- [ ] Instancia única del picker (`show`): al correr `clipboard-manager show`, verificar si ya hay una instancia activa via un socket dedicado (`~/.clipboard-manager-show.sock`). Si existe, enviarle `{"type":"focus"}` y salir. Si no, levantar la UI, abrir el socket y escuchar mensajes de foco — al recibirlos llamar `w.RequestFocus()`.
-- [ ] Soporte de imágenes en el historial:
+- [x] Instancia única del picker (`show`): al correr `clipboard-manager show`, verificar si ya hay una instancia activa via un socket dedicado (`~/.clipboard-manager-show.sock`). Si existe, enviarle `{"type":"focus"}` y salir. Si no, levantar la UI, abrir el socket y escuchar mensajes de foco — al recibirlos llamar `w.RequestFocus()`.
+- [x] Soporte de imágenes en el historial:
   - Detectar cuando el clipboard contiene una imagen (ej. screenshots de GNOME)
   - Guardar imágenes en disco (`~/.local/share/clipboard-manager/images/`) referenciadas desde SQLite
   - Mostrar thumbnails en la UI del picker
   - Al seleccionar una imagen, devolverla al clipboard como imagen (no como ruta)
   - Considerar límite de tamaño y limpieza de imágenes huérfanas al hacer clear
-- [ ] Settings integrado en la ventana principal: reemplazar la segunda ventana de Settings por un panel lateral o vista inline dentro de la misma ventana, usando `container.NewAppTabs` o un layout con panel izquierdo (lista) / derecho (settings) para no romper el foco ni abrir ventanas adicionales.
+- [x] Settings integrado en la ventana principal: reemplazar la segunda ventana de Settings por un panel lateral o vista inline dentro de la misma ventana, usando `container.NewAppTabs` o un layout con panel izquierdo (lista) / derecho (settings) para no romper el foco ni abrir ventanas adicionales.
+- [x] Keyboard shortcuts: navegación con flechas, Enter para seleccionar, Escape para cerrar, Space para pegar sin cerrar, Ctrl+S para guardar settings, Ctrl+/ para abrir ayuda
+- [ ] Menú de personalización de shortcuts: permitir al usuario reasignar los shortcuts desde la UI de Settings, persistiendo la configuración en `config.json`
 - [ ] Temas (colores): permitir al usuario cambiar el tema de la UI desde Settings. Fyne soporta `theme.DarkTheme()` y `theme.LightTheme()` nativamente, y permite temas personalizados implementando la interfaz `fyne.Theme`. Persistir la selección en `config.json` y aplicarla con `a.Settings().SetTheme()` al arrancar.
 - [ ] Icono de aplicación: diseñar un PNG (256×256), embeber con `fyne bundle` y asignarlo con `a.SetIcon()` para reemplazar el engranaje por defecto en alt-tab, barra de título y taskbar.
 - [ ] Detección de contraseñas y ofuscación: identificar entradas del historial que posiblemente sean contraseñas (heurística: sin espacios, longitud mínima, mezcla de caracteres, etc.) y mostrarlas ofuscadas en la UI (`••••••••`) con opción de revelar/ocultar por item.
