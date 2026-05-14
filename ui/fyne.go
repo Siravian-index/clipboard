@@ -371,6 +371,7 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 		onMainScreen = true
 		w.SetTitle("Clipboard History")
 		w.SetContent(mainContent)
+		w.Canvas().Focus(list)
 		w.Canvas().SetOnTypedKey(func(ev *fyne.KeyEvent) {
 			if ev.Name != fyne.KeyEscape {
 				return
