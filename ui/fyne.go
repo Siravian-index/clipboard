@@ -16,6 +16,7 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
@@ -29,6 +30,52 @@ type FyneUI struct{}
 
 func NewFyneUI() *FyneUI {
 	return &FyneUI{}
+}
+
+// searchEntry is a custom Entry that forwards our global shortcuts even when focused.
+// Fyne routes shortcuts to the focused widget first; without this wrapper those
+// shortcuts would be swallowed by the default Entry handler.
+type searchEntry struct {
+	widget.Entry
+	onCtrlF     func()
+	onCtrlD     func()
+	onCtrlSlash func()
+	onCtrlH     func()
+}
+
+func newSearchEntry() *searchEntry {
+	e := &searchEntry{}
+	e.ExtendBaseWidget(e)
+	return e
+}
+
+func (e *searchEntry) TypedShortcut(s fyne.Shortcut) {
+	cs, ok := s.(*desktop.CustomShortcut)
+	if ok {
+		switch cs.KeyName {
+		case fyne.KeyF:
+			if e.onCtrlF != nil {
+				e.onCtrlF()
+				return
+			}
+		case fyne.KeyD:
+			if e.onCtrlD != nil {
+				e.onCtrlD()
+				return
+			}
+		case fyne.KeySlash:
+			if e.onCtrlSlash != nil {
+				e.onCtrlSlash()
+				return
+			}
+		case fyne.KeyH:
+			if e.onCtrlH != nil {
+				e.onCtrlH()
+				return
+			}
+		}
+	}
+	e.Entry.TypedShortcut(s)
 }
 
 // Show displays the clipboard history picker. It returns a channel that emits
@@ -116,11 +163,11 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 				lbl.SetText(imageLabel(entry.Content))
 			} else {
 				img.File = ""
-				img.Resource = theme.FileTextIcon()
+				img.Resource = nil
 				img.Hide()
 				lbl.SetText(truncateText(entry.Content))
 			}
-			img.Refresh()
+			box.Refresh()
 		},
 	)
 
@@ -149,44 +196,88 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 		}
 	}
 
-	// Search bar: entry + toggle button.
-	searchEntry := widget.NewEntry()
-	searchEntry.SetPlaceHolder("Search…")
-	searchEntry.Hide()
+	searchVisible := false
+	var searchBtn *widget.Button
 
-	searchEntry.OnChanged = func(q string) {
+	updateSearchIcon := func() {
+		mu.Lock()
+		hasQuery := query != ""
+		mu.Unlock()
+		if hasQuery && !searchVisible {
+			searchBtn.Icon = theme.SearchReplaceIcon()
+		} else {
+			searchBtn.Icon = theme.SearchIcon()
+		}
+		searchBtn.Refresh()
+	}
+
+	searchField := newSearchEntry()
+	searchField.SetPlaceHolder("Search…")
+	searchField.Hide()
+
+	searchField.OnChanged = func(q string) {
 		mu.Lock()
 		query = q
 		applyFilter()
 		mu.Unlock()
 		list.Refresh()
 		refreshEmpty()
+		updateSearchIcon()
 	}
 
-	searchVisible := false
-	var searchBtn *widget.Button
-	searchBtn = widget.NewButtonWithIcon("", theme.SearchIcon(), func() {
-		searchVisible = !searchVisible
-		if searchVisible {
-			searchEntry.Show()
-			w.Canvas().Focus(searchEntry)
-		} else {
-			searchEntry.SetText("")
-			searchEntry.Hide()
-			mu.Lock()
-			query = ""
-			applyFilter()
-			mu.Unlock()
-			list.Refresh()
-			refreshEmpty()
-		}
-		_ = searchBtn // referenced to avoid unused warning
-	})
-
-	// showMain restores the main clipboard list screen.
 	var showMain func()
+	onMainScreen := true
 
-	settingsBtn := widget.NewButton("⚙", func() {
+	// helpOpen prevents stacking multiple help dialogs and lets Escape close it.
+	helpOpen := false
+	var activeHelp dialog.Dialog
+
+	showHelp := func() {
+		if helpOpen {
+			return
+		}
+		helpOpen = true
+
+		type row struct{ key, action string }
+		shortcuts := []row{
+			{"Ctrl+F", "Toggle search bar (filter stays active when closed)"},
+			{"Ctrl+D", "Clear search input"},
+			{"Ctrl+/", "Open Settings"},
+			{"Ctrl+H", "Show this help"},
+			{"↑ / ↓", "Navigate entries"},
+			{"Space", "Copy selected entry"},
+			{"Escape", "Close search / close window"},
+		}
+
+		rows := []fyne.CanvasObject{
+			container.NewGridWithColumns(2,
+				widget.NewLabelWithStyle("Shortcut", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+				widget.NewLabelWithStyle("Action", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			),
+			widget.NewSeparator(),
+		}
+		for _, s := range shortcuts {
+			key := widget.NewLabelWithStyle(s.key, fyne.TextAlignLeading, fyne.TextStyle{Monospace: true})
+			action := widget.NewLabel(s.action)
+			action.Wrapping = fyne.TextWrapWord
+			rows = append(rows, container.NewGridWithColumns(2, key, action))
+		}
+
+		content := container.NewScroll(container.NewVBox(rows...))
+		content.SetMinSize(fyne.NewSize(420, 300))
+
+		d := dialog.NewCustom("Keyboard Shortcuts", "Close", content, w)
+		d.SetOnClosed(func() {
+			helpOpen = false
+			activeHelp = nil
+		})
+		d.Resize(fyne.NewSize(460, 360))
+		d.Show()
+		activeHelp = d
+	}
+
+	openSettings := func() {
+		onMainScreen = false
 		onClearUI := func() {
 			statusLabel.SetText("")
 			mu.Lock()
@@ -205,47 +296,134 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 				showMain()
 			}
 		})
+	}
+
+	// hideSearch closes the search bar keeping the active filter.
+	hideSearch := func() {
+		searchVisible = false
+		searchField.Hide()
+		w.Canvas().Focus(list)
+		updateSearchIcon()
+	}
+
+	// showSearch opens the search bar and focuses the input.
+	showSearch := func() {
+		searchVisible = true
+		searchField.Show()
+		w.Canvas().Focus(searchField)
+		updateSearchIcon()
+	}
+
+	// clearSearch empties the search input and resets the filter.
+	clearSearch := func() {
+		searchField.SetText("")
+	}
+
+	// Wire searchEntry shortcut handlers — these fire when the input has focus.
+	searchField.onCtrlF = func() {
+		if onMainScreen {
+			hideSearch()
+		}
+	}
+	searchField.onCtrlD = func() {
+		clearSearch()
+	}
+	searchField.onCtrlSlash = func() {
+		if onMainScreen {
+			openSettings()
+		}
+	}
+	searchField.onCtrlH = func() {
+		showHelp()
+	}
+
+	searchBtn = widget.NewButtonWithIcon("", theme.SearchIcon(), func() {
+		if searchVisible {
+			hideSearch()
+		} else {
+			showSearch()
+		}
+	})
+
+	settingsBtn := widget.NewButtonWithIcon("", theme.SettingsIcon(), func() {
+		openSettings()
 	})
 
 	header := container.NewBorder(
 		nil, nil,
 		widget.NewLabel("Select an entry to copy:"),
 		searchBtn,
-		searchEntry,
+		searchField,
 	)
 
 	mainContent := container.NewBorder(
-		container.NewVBox(
-			header,
-		),
+		container.NewVBox(header),
 		container.NewBorder(nil, nil, nil, settingsBtn, statusLabel),
 		nil, nil,
 		container.NewStack(list, container.NewCenter(emptyLabel), container.NewCenter(noResultsLabel)),
 	)
 
 	showMain = func() {
+		onMainScreen = true
 		w.SetTitle("Clipboard History")
 		w.SetContent(mainContent)
 		w.Canvas().SetOnTypedKey(func(ev *fyne.KeyEvent) {
-			if ev.Name == fyne.KeyEscape {
-				if query != "" || searchVisible {
-					// Clear search first.
-					searchEntry.SetText("")
-					searchEntry.Hide()
-					searchVisible = false
-					mu.Lock()
-					query = ""
-					applyFilter()
-					mu.Unlock()
-					list.Refresh()
-					refreshEmpty()
-				} else {
-					w.Close()
-				}
+			if ev.Name != fyne.KeyEscape {
+				return
+			}
+			if helpOpen {
+				activeHelp.Hide()
+				return
+			}
+			if query != "" || searchVisible {
+				searchField.SetText("")
+				hideSearch()
+				mu.Lock()
+				query = ""
+				applyFilter()
+				mu.Unlock()
+				list.Refresh()
+				refreshEmpty()
+			} else {
+				w.Close()
 			}
 		})
 		refreshEmpty()
 	}
+
+	// Canvas-level shortcuts fire when the list (or nothing) has focus.
+	ctrlShortcut := func(key fyne.KeyName) *desktop.CustomShortcut {
+		return &desktop.CustomShortcut{KeyName: key, Modifier: fyne.KeyModifierControl}
+	}
+
+	w.Canvas().AddShortcut(ctrlShortcut(fyne.KeyF), func(_ fyne.Shortcut) {
+		if !onMainScreen {
+			return
+		}
+		if searchVisible {
+			hideSearch()
+		} else {
+			showSearch()
+		}
+	})
+
+	w.Canvas().AddShortcut(ctrlShortcut(fyne.KeyD), func(_ fyne.Shortcut) {
+		if !onMainScreen || !searchVisible {
+			return
+		}
+		clearSearch()
+	})
+
+	w.Canvas().AddShortcut(ctrlShortcut(fyne.KeySlash), func(_ fyne.Shortcut) {
+		if !onMainScreen {
+			return
+		}
+		openSettings()
+	})
+
+	w.Canvas().AddShortcut(ctrlShortcut(fyne.KeyH), func(_ fyne.Shortcut) {
+		showHelp()
+	})
 
 	list.OnSelected = func(id widget.ListItemID) {
 		mu.Lock()
@@ -258,9 +436,7 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 
 		writeToClipboard(w, entry)
 		selections <- entry
-
-		preview := previewText(entry)
-		statusLabel.SetText("Copied: " + preview)
+		statusLabel.SetText("Copied: " + previewText(entry))
 		if !cfg.KeepWindowOpen {
 			w.Close()
 		}
@@ -307,7 +483,7 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 	})
 
 	w.Show()
-	refreshEmpty()
+	showMain()
 	a.Run()
 
 	return selections, nil

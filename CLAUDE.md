@@ -54,6 +54,14 @@ The app runs as two processes that communicate over a Unix socket at `$HOME/.cli
 - `SQLiteHistory` — production backend (uses `modernc.org/sqlite`, pure Go, no CGO)
 - `MemoryHistory` — used in tests
 
+## After making changes
+
+Always run the following after any code change so the user can test immediately:
+
+```bash
+go build -o clipboard-manager . && systemctl --user restart clipboard-manager
+```
+
 ## Platform
 
 Linux only (X11/XWayland). Requires display server for clipboard access.
