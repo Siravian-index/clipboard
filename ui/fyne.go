@@ -99,6 +99,60 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 		},
 	)
 
+	emptyLabel := widget.NewLabel("No history yet — start copying something!")
+	emptyLabel.Alignment = fyne.TextAlignCenter
+
+	refreshEmpty := func() {
+		mu.Lock()
+		empty := len(current) == 0
+		mu.Unlock()
+		if empty {
+			emptyLabel.Show()
+		} else {
+			emptyLabel.Hide()
+		}
+	}
+
+	// showMain restores the main clipboard list screen.
+	var showMain func()
+
+	settingsBtn := widget.NewButton("⚙", func() {
+		onClearUI := func() {
+			statusLabel.SetText("")
+			mu.Lock()
+			current = nil
+			mu.Unlock()
+			list.Refresh()
+			refreshEmpty()
+		}
+		settingsContent := buildSettingsContent(w, cfg, onClear, onClearUI, func() { showMain() })
+		w.SetTitle("Settings")
+		w.SetContent(settingsContent)
+		w.Canvas().SetOnTypedKey(func(ev *fyne.KeyEvent) {
+			if ev.Name == fyne.KeyEscape {
+				showMain()
+			}
+		})
+	})
+
+	mainContent := container.NewBorder(
+		widget.NewLabel("Select an entry to copy:"),
+		container.NewBorder(nil, nil, nil, settingsBtn, statusLabel),
+		nil, nil,
+		container.NewStack(list, container.NewCenter(emptyLabel)),
+	)
+
+	showMain = func() {
+		w.SetTitle("Clipboard History")
+		w.SetContent(mainContent)
+		w.Canvas().SetOnTypedKey(func(ev *fyne.KeyEvent) {
+			if ev.Name == fyne.KeyEscape {
+				w.Close()
+			}
+		})
+		refreshEmpty()
+	}
+
 	list.OnSelected = func(id widget.ListItemID) {
 		mu.Lock()
 		if id >= len(current) {
@@ -145,43 +199,11 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 		}
 	}()
 
-	emptyLabel := widget.NewLabel("No history yet — start copying something!")
-	emptyLabel.Alignment = fyne.TextAlignCenter
-
-	refreshEmpty := func() {
-		mu.Lock()
-		empty := len(current) == 0
-		mu.Unlock()
-		if empty {
-			emptyLabel.Show()
-		} else {
-			emptyLabel.Hide()
-		}
-	}
-
-	settingsBtn := widget.NewButton("⚙", func() {
-		onClearUI := func() {
-			statusLabel.SetText("")
-			mu.Lock()
-			current = nil
-			mu.Unlock()
-			list.Refresh()
-			refreshEmpty()
-		}
-		showSettings(a, w, cfg, onClear, onClearUI)
-	})
-
 	w.SetOnClosed(func() {
 		close(selections)
 	})
 
-	w.SetContent(container.NewBorder(
-		widget.NewLabel("Select an entry to copy:"),
-		container.NewBorder(nil, nil, nil, settingsBtn, statusLabel),
-		nil, nil,
-		container.NewStack(list, container.NewCenter(emptyLabel)),
-	))
-
+	w.SetContent(mainContent)
 	w.Canvas().SetOnTypedKey(func(ev *fyne.KeyEvent) {
 		if ev.Name == fyne.KeyEscape {
 			w.Close()
@@ -193,6 +215,93 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 	a.Run()
 
 	return selections, nil
+}
+
+// buildSettingsContent returns the settings screen content for in-window navigation.
+func buildSettingsContent(w fyne.Window, cfg *config.Config, onClear func(), onClearUI func(), goBack func()) fyne.CanvasObject {
+	maxEntriesVal := newFloat(float64(cfg.MaxEntries))
+	maxEntriesLabel := widget.NewLabel(fmt.Sprintf("Max entries: %d", cfg.MaxEntries))
+	maxEntriesSlider := widget.NewSlider(10, 500)
+	maxEntriesSlider.Step = 10
+	maxEntriesSlider.Value = float64(cfg.MaxEntries)
+	maxEntriesSlider.OnChanged = func(v float64) {
+		*maxEntriesVal = v
+		maxEntriesLabel.SetText(fmt.Sprintf("Max entries: %d", int(v)))
+	}
+
+	maxImageVal := newFloat(float64(cfg.MaxImageSizeMB))
+	maxImageLabel := widget.NewLabel(fmt.Sprintf("Max image size: %d MB", cfg.MaxImageSizeMB))
+	maxImageSlider := widget.NewSlider(1, 50)
+	maxImageSlider.Step = 1
+	maxImageSlider.Value = float64(cfg.MaxImageSizeMB)
+	maxImageSlider.OnChanged = func(v float64) {
+		*maxImageVal = v
+		maxImageLabel.SetText(fmt.Sprintf("Max image size: %d MB", int(v)))
+	}
+
+	keepOpenCheck := widget.NewCheck("Keep window open after selection", func(v bool) {
+		cfg.KeepWindowOpen = v
+	})
+	keepOpenCheck.SetChecked(cfg.KeepWindowOpen)
+
+	clearBtn := widget.NewButton("🗑 Clear History", func() {
+		dialog.ShowConfirm(
+			"Clear History",
+			"Delete all clipboard history entries?",
+			func(confirmed bool) {
+				if confirmed {
+					if onClear != nil {
+						onClear()
+					}
+					if onClearUI != nil {
+						onClearUI()
+					}
+					goBack()
+				}
+			},
+			w,
+		)
+	})
+
+	saveBtn := widget.NewButton("Save", func() {
+		cfg.MaxEntries = int(*maxEntriesVal)
+		cfg.MaxImageSizeMB = int(*maxImageVal)
+		if err := cfg.Save(); err != nil {
+			dialog.ShowError(err, w)
+			return
+		}
+		sendSIGHUP()
+		goBack()
+	})
+
+	backBtn := widget.NewButtonWithIcon("Back", theme.NavigateBackIcon(), func() {
+		goBack()
+	})
+
+	body := container.NewVBox(
+		widget.NewSeparator(),
+		widget.NewLabel("History"),
+		maxEntriesLabel,
+		maxEntriesSlider,
+		widget.NewSeparator(),
+		widget.NewLabel("Images"),
+		maxImageLabel,
+		maxImageSlider,
+		widget.NewSeparator(),
+		widget.NewLabel("Behavior"),
+		keepOpenCheck,
+		widget.NewSeparator(),
+		widget.NewLabel("Danger zone"),
+		clearBtn,
+	)
+
+	return container.NewBorder(
+		container.NewBorder(nil, nil, backBtn, saveBtn,
+			widget.NewLabelWithStyle("Settings", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		),
+		nil, nil, nil,
+		container.NewScroll(body),
+	)
 }
 
 // writeToClipboard writes the entry content to the system clipboard.
@@ -245,87 +354,6 @@ func previewText(entry history.ClipboardEntry) string {
 		text = string([]rune(text)[:50]) + "…"
 	}
 	return text
-}
-
-func showSettings(a fyne.App, parent fyne.Window, cfg *config.Config, onClear func(), onClearUI func()) {
-	sw := a.NewWindow("Settings")
-	sw.Resize(fyne.NewSize(360, 320))
-	sw.SetFixedSize(true)
-	sw.CenterOnScreen()
-
-	maxEntriesVal := newFloat(float64(cfg.MaxEntries))
-	maxEntriesLabel := widget.NewLabel(fmt.Sprintf("Max entries: %d", cfg.MaxEntries))
-	maxEntriesSlider := widget.NewSlider(10, 500)
-	maxEntriesSlider.Step = 10
-	maxEntriesSlider.Value = float64(cfg.MaxEntries)
-	maxEntriesSlider.OnChanged = func(v float64) {
-		*maxEntriesVal = v
-		maxEntriesLabel.SetText(fmt.Sprintf("Max entries: %d", int(v)))
-	}
-
-	maxImageVal := newFloat(float64(cfg.MaxImageSizeMB))
-	maxImageLabel := widget.NewLabel(fmt.Sprintf("Max image size: %d MB", cfg.MaxImageSizeMB))
-	maxImageSlider := widget.NewSlider(1, 50)
-	maxImageSlider.Step = 1
-	maxImageSlider.Value = float64(cfg.MaxImageSizeMB)
-	maxImageSlider.OnChanged = func(v float64) {
-		*maxImageVal = v
-		maxImageLabel.SetText(fmt.Sprintf("Max image size: %d MB", int(v)))
-	}
-
-	keepOpenCheck := widget.NewCheck("Keep window open after selection", func(v bool) {
-		cfg.KeepWindowOpen = v
-	})
-	keepOpenCheck.SetChecked(cfg.KeepWindowOpen)
-
-	clearBtn := widget.NewButton("🗑 Clear History", func() {
-		dialog.ShowConfirm(
-			"Clear History",
-			"Delete all clipboard history entries?",
-			func(confirmed bool) {
-				if confirmed {
-					if onClear != nil {
-						onClear()
-					}
-					if onClearUI != nil {
-						onClearUI()
-					}
-				}
-			},
-			sw,
-		)
-	})
-
-	saveBtn := widget.NewButton("Save", func() {
-		cfg.MaxEntries = int(*maxEntriesVal)
-		cfg.MaxImageSizeMB = int(*maxImageVal)
-		if err := cfg.Save(); err != nil {
-			dialog.ShowError(err, sw)
-			return
-		}
-		sendSIGHUP()
-		sw.Close()
-	})
-
-	sw.SetContent(container.NewVBox(
-		widget.NewLabel("History"),
-		maxEntriesLabel,
-		maxEntriesSlider,
-		widget.NewSeparator(),
-		widget.NewLabel("Images"),
-		maxImageLabel,
-		maxImageSlider,
-		widget.NewSeparator(),
-		widget.NewLabel("Behavior"),
-		keepOpenCheck,
-		widget.NewSeparator(),
-		widget.NewLabel("Danger zone"),
-		clearBtn,
-		widget.NewSeparator(),
-		container.NewHBox(widget.NewLabel(""), saveBtn),
-	))
-
-	sw.Show()
 }
 
 func newFloat(v float64) *float64 {
