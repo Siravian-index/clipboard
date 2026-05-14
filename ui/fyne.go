@@ -276,6 +276,9 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 		activeHelp = d
 	}
 
+	// settingsSave holds the active save function while settings is open.
+	var settingsSave func()
+
 	openSettings := func() {
 		onMainScreen = false
 		onClearUI := func() {
@@ -288,7 +291,8 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 			list.Refresh()
 			refreshEmpty()
 		}
-		settingsContent := buildSettingsContent(w, cfg, onClear, onClearUI, func() { showMain() })
+		settingsContent, save := buildSettingsContent(w, cfg, onClear, onClearUI, func() { showMain() })
+		settingsSave = save
 		w.SetTitle("Settings")
 		w.SetContent(settingsContent)
 		w.Canvas().SetOnTypedKey(func(ev *fyne.KeyEvent) {
@@ -425,6 +429,13 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 		showHelp()
 	})
 
+	// Ctrl+S — save in any screen that exposes a save action (e.g. settings).
+	w.Canvas().AddShortcut(ctrlShortcut(fyne.KeyS), func(_ fyne.Shortcut) {
+		if !onMainScreen && settingsSave != nil {
+			settingsSave()
+		}
+	})
+
 	list.OnSelected = func(id widget.ListItemID) {
 		mu.Lock()
 		if id >= len(filtered) {
@@ -504,8 +515,8 @@ func fuzzyMatch(pattern, target string) bool {
 	return pi == len(prunes)
 }
 
-// buildSettingsContent returns the settings screen content for in-window navigation.
-func buildSettingsContent(w fyne.Window, cfg *config.Config, onClear func(), onClearUI func(), goBack func()) fyne.CanvasObject {
+// buildSettingsContent returns the settings screen content and a save function for in-window navigation.
+func buildSettingsContent(w fyne.Window, cfg *config.Config, onClear func(), onClearUI func(), goBack func()) (fyne.CanvasObject, func()) {
 	maxEntriesVal := newFloat(float64(cfg.MaxEntries))
 	maxEntriesLabel := widget.NewLabel(fmt.Sprintf("Max entries: %d", cfg.MaxEntries))
 	maxEntriesSlider := widget.NewSlider(10, 500)
@@ -550,7 +561,7 @@ func buildSettingsContent(w fyne.Window, cfg *config.Config, onClear func(), onC
 		)
 	})
 
-	saveBtn := widget.NewButton("Save", func() {
+	save := func() {
 		cfg.MaxEntries = int(*maxEntriesVal)
 		cfg.MaxImageSizeMB = int(*maxImageVal)
 		if err := cfg.Save(); err != nil {
@@ -559,7 +570,9 @@ func buildSettingsContent(w fyne.Window, cfg *config.Config, onClear func(), onC
 		}
 		sendSIGHUP()
 		goBack()
-	})
+	}
+
+	saveBtn := widget.NewButton("Save", save)
 
 	backBtn := widget.NewButtonWithIcon("Back", theme.NavigateBackIcon(), func() {
 		goBack()
@@ -588,7 +601,7 @@ func buildSettingsContent(w fyne.Window, cfg *config.Config, onClear func(), onC
 		),
 		nil, nil, nil,
 		container.NewScroll(body),
-	)
+	), save
 }
 
 // writeToClipboard writes the entry content to the system clipboard.
