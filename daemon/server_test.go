@@ -226,6 +226,148 @@ func TestServer_MultipleSelectsBeforeCancel(t *testing.T) {
 	}
 }
 
+func TestServer_HandlesSearchMessage(t *testing.T) {
+	s, sockPath := testServer(t)
+	s.hist.Add(history.ClipboardEntry{Type: history.EntryTypeText, Content: "hello world"})
+	s.hist.Add(history.ClipboardEntry{Type: history.EntryTypeText, Content: "foo bar"})
+	s.hist.Add(history.ClipboardEntry{Type: history.EntryTypeText, Content: "hello go"})
+	stop := startListening(t, s)
+	defer stop()
+
+	conn := dial(t, sockPath)
+	defer conn.Close()
+
+	scanner := bufio.NewScanner(conn)
+	readMsg(t, scanner) // consume init
+
+	sendMsg(t, conn, clientMsg{Type: msgSearch, Query: "hello"})
+
+	done := make(chan serverMsg, 1)
+	go func() { done <- readMsg(t, scanner) }()
+
+	select {
+	case msg := <-done:
+		if msg.Type != msgSearchResult {
+			t.Errorf("expected search_result, got %q", msg.Type)
+		}
+		if len(msg.Items) != 2 {
+			t.Errorf("expected 2 results, got %d", len(msg.Items))
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("timed out waiting for search result")
+	}
+}
+
+func TestServer_BroadcastRefresh(t *testing.T) {
+	s, sockPath := testServer(t)
+	s.hist.Add(history.ClipboardEntry{Type: history.EntryTypeText, Content: "a"})
+	stop := startListening(t, s)
+	defer stop()
+
+	conn := dial(t, sockPath)
+	defer conn.Close()
+
+	scanner := bufio.NewScanner(conn)
+	readMsg(t, scanner) // consume init
+
+	s.hist.Add(history.ClipboardEntry{Type: history.EntryTypeText, Content: "b"})
+	s.broadcastRefresh()
+
+	done := make(chan serverMsg, 1)
+	go func() { done <- readMsg(t, scanner) }()
+
+	select {
+	case msg := <-done:
+		if msg.Type != msgRefresh {
+			t.Errorf("expected refresh, got %q", msg.Type)
+		}
+		if len(msg.Items) != 2 {
+			t.Errorf("expected 2 items in refresh, got %d", len(msg.Items))
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("timed out waiting for broadcast refresh")
+	}
+}
+
+func TestServer_MaxEntries_MemoryHistory(t *testing.T) {
+	s, _ := testServer(t) // testServer uses MemoryHistory
+	if got := s.maxEntries(); got != 50 {
+		t.Errorf("expected default 50 for MemoryHistory, got %d", got)
+	}
+}
+
+func TestServer_ReloadConfig_MemoryHistory(t *testing.T) {
+	s, _ := testServer(t)
+	// reloadConfig with MemoryHistory is a no-op (type assertion to *SQLiteHistory fails).
+	// Verify it doesn't panic.
+	s.reloadConfig()
+}
+
+// --- filesystem helpers ---
+
+func TestDataDir(t *testing.T) {
+	got := dataDir()
+	if got == "" {
+		t.Error("expected non-empty dataDir")
+	}
+}
+
+func TestWriteAndReadPIDFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// ensureDataPaths creates the directory that writePIDFile requires.
+	if _, _, err := ensureDataPaths(); err != nil {
+		t.Fatalf("ensureDataPaths failed: %v", err)
+	}
+
+	if err := writePIDFile(); err != nil {
+		t.Fatalf("writePIDFile failed: %v", err)
+	}
+
+	pid := ReadPID()
+	if pid != os.Getpid() {
+		t.Errorf("expected PID %d, got %d", os.Getpid(), pid)
+	}
+}
+
+func TestRemovePIDFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	_ = writePIDFile()
+	removePIDFile()
+
+	if ReadPID() != 0 {
+		t.Error("expected ReadPID to return 0 after remove")
+	}
+}
+
+func TestReadPID_MissingFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if pid := ReadPID(); pid != 0 {
+		t.Errorf("expected 0 for missing PID file, got %d", pid)
+	}
+}
+
+func TestEnsureDataPaths(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	dbPath, imageDir, err := ensureDataPaths()
+	if err != nil {
+		t.Fatalf("ensureDataPaths failed: %v", err)
+	}
+	if dbPath == "" {
+		t.Error("expected non-empty dbPath")
+	}
+	if info, err := os.Stat(imageDir); err != nil || !info.IsDir() {
+		t.Errorf("expected imageDir to exist as directory: %v", err)
+	}
+	// Idempotent — second call should not error.
+	if _, _, err := ensureDataPaths(); err != nil {
+		t.Errorf("second ensureDataPaths call failed: %v", err)
+	}
+}
+
 // noopWatcher satisfies the watcher.Watcher interface without doing anything.
 type noopWatcher struct{}
 
