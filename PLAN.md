@@ -125,19 +125,27 @@ type HotkeyListener interface {
   - Considerar límite de tamaño y limpieza de imágenes huérfanas al hacer clear
 - [x] Settings integrado en la ventana principal: reemplazar la segunda ventana de Settings por un panel lateral o vista inline dentro de la misma ventana, usando `container.NewAppTabs` o un layout con panel izquierdo (lista) / derecho (settings) para no romper el foco ni abrir ventanas adicionales.
 - [x] Keyboard shortcuts: navegación con flechas, Enter para seleccionar, Escape para cerrar, Space para pegar sin cerrar, Ctrl+S para guardar settings, Ctrl+/ para abrir ayuda
-- [ ] Menú de personalización de shortcuts: permitir al usuario reasignar los shortcuts desde la UI de Settings, persistiendo la configuración en `config.json`
-- [ ] Temas (colores): permitir al usuario cambiar el tema de la UI desde Settings. Fyne soporta `theme.DarkTheme()` y `theme.LightTheme()` nativamente, y permite temas personalizados implementando la interfaz `fyne.Theme`. Persistir la selección en `config.json` y aplicarla con `a.Settings().SetTheme()` al arrancar.
-- [ ] Icono de aplicación: diseñar un PNG (256×256), embeber con `fyne bundle` y asignarlo con `a.SetIcon()` para reemplazar el engranaje por defecto en alt-tab, barra de título y taskbar.
-- [ ] Detección de contraseñas y ofuscación: identificar entradas del historial que posiblemente sean contraseñas (heurística: sin espacios, longitud mínima, mezcla de caracteres, etc.) y mostrarlas ofuscadas en la UI (`••••••••`) con opción de revelar/ocultar por item.
-- [ ] Detección de URLs: identificar entradas que sean links (validando con `url.Parse`) y mostrar un icono adicional en la fila para abrirlos directamente en el browser con `xdg-open`, manteniendo la acción de copiar como principal.
-- [ ] Watcher event-driven con X11 xfixes
-- [ ] Soporte Wayland via DBus
+- [x] Temas (colores): selector de tema en Settings con 9 paletas (Nord, Tokyo Night, Gruvbox, Kanagawa, Pure Black, Solarized Light, GitHub Light, Rosé Pine Dawn, Everforest Light). Persistido en `config.json`, aplicado con `a.Settings().SetTheme()` al arrancar. Preview en vivo al cambiar; revert si el usuario cancela.
 - [x] Menú de ajustes en la UI con opciones configurables:
   - Mantener ventana abierta tras selección (on/off) — aplica inmediato, solo afecta al cliente
   - Límite máximo de entradas en el historial — aplica enviando SIGHUP al daemon
   - Botón para limpiar el historial completo con confirmación
 - [x] Persistir ajustes en `~/.config/clipboard-manager/config.json` via paquete `config/`
 - [x] Daemon recarga configuración al recibir SIGHUP (estándar Unix)
+- [x] Cobertura de tests y refactorización:
+  - `history`: Search, Count, MaxSize, ImageDir, EnsureImageDir cubiertos (52% → 85%)
+  - `watcher`: Reset cubierto (79% → 86%)
+  - `client`: focusExistingInstance, listenForFocus, handleFocusConn con sockets fake (0% → 32%)
+  - `ui`: extraído `clipboardState` (state.go) y `runMessageLoop` (loop.go) de `Show()`; ambos unit-testeados sin display (1.7% → 38%)
+- [x] Convenciones de código documentadas en `CLAUDE.md` (Go style / gopher idioms)
+- [ ] **BUG**: La configuración de máximo de entries en el historial no funciona correctamente
+- [ ] Mejorar estilo del scrollbar lateral derecho en la lista de entries
+- [ ] Menú de personalización de shortcuts: permitir al usuario reasignar los shortcuts desde la UI de Settings, persistiendo la configuración en `config.json`
+- [ ] Icono de aplicación: diseñar un PNG (256×256), embeber con `fyne bundle` y asignarlo con `a.SetIcon()` para reemplazar el engranaje por defecto en alt-tab, barra de título y taskbar.
+- [ ] Detección de contraseñas y ofuscación: identificar entradas del historial que posiblemente sean contraseñas (heurística: sin espacios, longitud mínima, mezcla de caracteres, etc.) y mostrarlas ofuscadas en la UI (`••••••••`) con opción de revelar/ocultar por item.
+- [ ] Detección de URLs: identificar entradas que sean links (validando con `url.Parse`) y mostrar un icono adicional en la fila para abrirlos directamente en el browser con `xdg-open`, manteniendo la acción de copiar como principal.
+- [ ] Watcher event-driven con X11 xfixes
+- [ ] Soporte Wayland via DBus
 
 ### Fase 3 — Distribución
 - [x] systemd user service para autostart al login (`~/.config/systemd/user/clipboard-manager.service`)
