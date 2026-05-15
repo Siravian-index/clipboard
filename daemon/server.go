@@ -26,22 +26,28 @@ const socketPath = "/.clipboard-manager.sock"
 type msgType string
 
 const (
-	msgInit   msgType = "init"
-	msgAdd    msgType = "add"
-	msgSelect msgType = "select"
-	msgCancel msgType = "cancel"
-	msgClear  msgType = "clear"
+	msgInit         msgType = "init"
+	msgAdd          msgType = "add"
+	msgRefresh      msgType = "refresh"
+	msgSelect       msgType = "select"
+	msgCancel       msgType = "cancel"
+	msgClear        msgType = "clear"
+	msgSearch       msgType = "search"
+	msgSearchResult msgType = "search_result"
 )
 
 type serverMsg struct {
-	Type  msgType                  `json:"type"`
-	Items []history.ClipboardEntry `json:"items,omitempty"`
-	Item  *history.ClipboardEntry  `json:"item,omitempty"`
+	Type         msgType                  `json:"type"`
+	Items        []history.ClipboardEntry `json:"items,omitempty"`
+	Item         *history.ClipboardEntry  `json:"item,omitempty"`
+	Query        string                   `json:"query,omitempty"`
+	TotalMatches int                      `json:"total_matches,omitempty"`
 }
 
 type clientMsg struct {
 	Type    msgType `json:"type"`
 	EntryID int64   `json:"entry_id,omitempty"`
+	Query   string  `json:"query,omitempty"`
 }
 
 // Server holds the clipboard history, watcher, and a list of active client channels for streaming.
@@ -51,7 +57,7 @@ type Server struct {
 	sockPath string
 
 	mu      sync.Mutex
-	clients map[chan history.ClipboardEntry]struct{}
+	clients map[chan serverMsg]struct{}
 }
 
 // NewServer creates a Server using config from disk, with SQLiteHistory and a 500ms PollingWatcher.
@@ -75,7 +81,7 @@ func NewServer() *Server {
 		hist:     hist,
 		watch:    watcher.NewPollingWatcher(500*time.Millisecond, imageDir, cfg.MaxImageSizeMB),
 		sockPath: os.Getenv("HOME") + socketPath,
-		clients:  make(map[chan history.ClipboardEntry]struct{}),
+		clients:  make(map[chan serverMsg]struct{}),
 	}
 }
 
@@ -143,29 +149,52 @@ func (s *Server) reloadConfig() {
 		sh.SetMaxSize(cfg.MaxEntries)
 	}
 	log.Printf("SIGHUP: config reloaded (max_entries=%d)", cfg.MaxEntries)
+	s.broadcastRefresh()
 }
 
 // broadcast sends a new entry to all connected clients.
 func (s *Server) broadcast(entry history.ClipboardEntry) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	msg := serverMsg{Type: msgAdd, Item: &entry}
 	for ch := range s.clients {
 		select {
-		case ch <- entry:
+		case ch <- msg:
 		default:
 		}
 	}
 }
 
-func (s *Server) subscribe() chan history.ClipboardEntry {
-	ch := make(chan history.ClipboardEntry, 16)
+// broadcastRefresh sends the current history list to all connected clients.
+func (s *Server) broadcastRefresh() {
+	items := s.hist.List()
+	msg := serverMsg{Type: msgRefresh, Items: items}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for ch := range s.clients {
+		select {
+		case ch <- msg:
+		default:
+		}
+	}
+}
+
+func (s *Server) maxEntries() int {
+	if sh, ok := s.hist.(*history.SQLiteHistory); ok {
+		return sh.MaxSize()
+	}
+	return 50
+}
+
+func (s *Server) subscribe() chan serverMsg {
+	ch := make(chan serverMsg, 16)
 	s.mu.Lock()
 	s.clients[ch] = struct{}{}
 	s.mu.Unlock()
 	return ch
 }
 
-func (s *Server) unsubscribe(ch chan history.ClipboardEntry) {
+func (s *Server) unsubscribe(ch chan serverMsg) {
 	s.mu.Lock()
 	delete(s.clients, ch)
 	s.mu.Unlock()
@@ -201,11 +230,11 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	for {
 		select {
-		case entry, ok := <-ch:
+		case msg, ok := <-ch:
 			if !ok {
 				return
 			}
-			data, _ := json.Marshal(serverMsg{Type: msgAdd, Item: &entry})
+			data, _ := json.Marshal(msg)
 			if _, err := conn.Write(append(data, '\n')); err != nil {
 				return
 			}
@@ -221,6 +250,16 @@ func (s *Server) handleConn(conn net.Conn) {
 				clipboard.Write(clipboard.FmtText, []byte{})
 				s.watch.Reset()
 				log.Println("history cleared")
+			case msgSearch:
+				result := s.hist.Search(msg.Query, s.maxEntries())
+				data, _ := json.Marshal(serverMsg{
+					Type:         msgSearchResult,
+					Items:        result.Entries,
+					TotalMatches: result.TotalMatches,
+				})
+				if _, err := conn.Write(append(data, '\n')); err != nil {
+					return
+				}
 			default:
 				return
 			}

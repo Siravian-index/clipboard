@@ -70,20 +70,13 @@ func (h *SQLiteHistory) Add(entry ClipboardEntry) {
 		log.Printf("sqlite: failed to insert entry: %v", err)
 		return
 	}
-
-	// Trim oldest entries beyond maxSize.
-	_, err := h.db.Exec(`
-		DELETE FROM entries WHERE id IN (
-			SELECT id FROM entries ORDER BY id DESC LIMIT -1 OFFSET ?
-		)
-	`, h.maxSize)
-	if err != nil {
-		log.Printf("sqlite: failed to trim entries: %v", err)
-	}
 }
 
 func (h *SQLiteHistory) List() []ClipboardEntry {
-	rows, err := h.db.Query(`SELECT id, content, type FROM entries ORDER BY id DESC`)
+	h.mu.Lock()
+	maxSize := h.maxSize
+	h.mu.Unlock()
+	rows, err := h.db.Query(`SELECT id, content, type FROM entries ORDER BY id DESC LIMIT ?`, maxSize)
 	if err != nil {
 		log.Printf("sqlite: failed to query entries: %v", err)
 		return nil
@@ -128,6 +121,49 @@ func (h *SQLiteHistory) SetMaxSize(maxSize int) {
 	h.mu.Lock()
 	h.maxSize = maxSize
 	h.mu.Unlock()
+}
+
+func (h *SQLiteHistory) MaxSize() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.maxSize
+}
+
+func (h *SQLiteHistory) Search(query string, limit int) SearchResult {
+	pattern := "%" + query + "%"
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	rows, err := h.db.Query(
+		`SELECT id, content, type FROM entries WHERE content LIKE ? ORDER BY id DESC LIMIT ?`,
+		pattern, limit,
+	)
+	if err != nil {
+		log.Printf("sqlite: failed to search entries: %v", err)
+		return SearchResult{}
+	}
+	defer rows.Close()
+
+	var entries []ClipboardEntry
+	for rows.Next() {
+		var e ClipboardEntry
+		var typ string
+		if err := rows.Scan(&e.ID, &e.Content, &typ); err != nil {
+			continue
+		}
+		e.Type = EntryType(typ)
+		entries = append(entries, e)
+	}
+
+	var count int
+	if err := h.db.QueryRow(
+		`SELECT COUNT(*) FROM entries WHERE content LIKE ?`, pattern,
+	).Scan(&count); err != nil {
+		log.Printf("sqlite: failed to count search results: %v", err)
+	}
+
+	return SearchResult{Entries: entries, TotalMatches: count}
 }
 
 func (h *SQLiteHistory) Close() error {

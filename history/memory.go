@@ -44,9 +44,6 @@ func (h *MemoryHistory) Add(entry ClipboardEntry) {
 	entry.ID = nextID
 
 	h.entries = append([]ClipboardEntry{entry}, filtered...)
-	if len(h.entries) > h.maxSize {
-		h.entries = h.entries[:h.maxSize]
-	}
 }
 
 func (h *MemoryHistory) List() []ClipboardEntry {
@@ -62,4 +59,22 @@ func (h *MemoryHistory) Clear() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.entries = nil
+}
+
+func (h *MemoryHistory) Search(query string, limit int) SearchResult {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	lq := strings.ToLower(query)
+	var matches []ClipboardEntry
+	for _, e := range h.entries {
+		if strings.Contains(strings.ToLower(e.Content), lq) {
+			matches = append(matches, e)
+		}
+	}
+	total := len(matches)
+	if limit > 0 && len(matches) > limit {
+		matches = matches[:limit]
+	}
+	return SearchResult{Entries: matches, TotalMatches: total}
 }

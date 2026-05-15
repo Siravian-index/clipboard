@@ -53,21 +53,17 @@ func TestMemoryHistory_DeduplicatesExisting(t *testing.T) {
 }
 
 func TestMemoryHistory_RespectsMaxSize(t *testing.T) {
+	// MemoryHistory no longer trims entries — maxSize is a visual limit only.
 	h := NewMemoryHistory(3)
 
 	h.Add(textEntry("a"))
 	h.Add(textEntry("b"))
 	h.Add(textEntry("c"))
-	h.Add(textEntry("d")) // Should evict "a".
+	h.Add(textEntry("d"))
 
 	items := h.List()
-	if len(items) != 3 {
-		t.Fatalf("expected 3 items, got %d", len(items))
-	}
-	for _, item := range items {
-		if item.Content == "a" {
-			t.Error("expected 'a' to be evicted but it's still present")
-		}
+	if len(items) != 4 {
+		t.Fatalf("expected 4 items, got %d", len(items))
 	}
 }
 

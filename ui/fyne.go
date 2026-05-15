@@ -34,6 +34,12 @@ func NewFyneUI() *FyneUI {
 	return &FyneUI{}
 }
 
+// SearchResponse carries search results from the daemon.
+type SearchResponse struct {
+	Items        []history.ClipboardEntry
+	TotalMatches int
+}
+
 // searchEntry is a custom Entry that forwards our global shortcuts even when focused.
 // Fyne routes shortcuts to the focused widget first; without this wrapper those
 // shortcuts would be swallowed by the default Entry handler.
@@ -82,7 +88,7 @@ func (e *searchEntry) TypedShortcut(s fyne.Shortcut) {
 
 // Show displays the clipboard history picker. It returns a channel that emits
 // each entry the user selects; the channel is closed when the window is dismissed.
-func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.ClipboardEntry, onClear func(), focusReqs <-chan struct{}) (<-chan history.ClipboardEntry, error) {
+func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.ClipboardEntry, refreshes <-chan []history.ClipboardEntry, searches <-chan SearchResponse, sendSearch func(string), onClear func(), focusReqs <-chan struct{}) (<-chan history.ClipboardEntry, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		cfg = config.Default()
@@ -112,7 +118,8 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 
 	// filtered holds the current view after applying the search query.
 	var filtered []history.ClipboardEntry
-	var query string
+	var activeQuery string
+	var totalMatches int
 
 	cachedImageLabel := func(path string) string {
 		if label, ok := imageLabelCache[path]; ok {
@@ -133,26 +140,15 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 	}
 
 	applyFilter := func() {
-		if query == "" {
+		if activeQuery == "" {
 			filtered = current
-		} else {
-			filtered = nil
-			for _, e := range current {
-				var haystack string
-				if e.Type == history.EntryTypeImage {
-					haystack = cachedImageLabel(e.Content)
-				} else {
-					haystack = e.Content
-				}
-				if fuzzyMatch(query, haystack) {
-					filtered = append(filtered, e)
-				}
-			}
 		}
+		// When activeQuery != "", filtered is set from search results received from daemon.
 	}
 	applyFilter()
 
 	statusLabel := widget.NewLabel("")
+	countLabel := widget.NewLabel(fmt.Sprintf("(%d)", len(current)))
 
 	countFn := func() int {
 		mu.Lock()
@@ -269,12 +265,23 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 	noResultsLabel.Alignment = fyne.TextAlignCenter
 	noResultsLabel.Hide()
 
+	moreResultsLine := canvas.NewLine(theme.WarningColor())
+	moreResultsLine.StrokeWidth = 2
+	moreResultsLabel := widget.NewLabelWithStyle("", fyne.TextAlignCenter, fyne.TextStyle{Italic: true})
+	moreResultsLabel.Importance = widget.LowImportance
+	moreResultsContainer := container.NewVBox(moreResultsLine, moreResultsLabel)
+	moreResultsContainer.Hide()
+
+	var refreshMore func()
+
 	refreshEmpty := func() {
 		mu.Lock()
 		totalEmpty := len(current) == 0
 		filteredEmpty := len(filtered) == 0
+		n := len(current)
 		mu.Unlock()
 
+		countLabel.SetText(fmt.Sprintf("(%d)", n))
 		if totalEmpty {
 			emptyLabel.Show()
 			noResultsLabel.Hide()
@@ -287,12 +294,25 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 		}
 	}
 
+	refreshMore = func() {
+		mu.Lock()
+		extra := totalMatches - len(filtered)
+		q := activeQuery
+		mu.Unlock()
+		if q != "" && extra > 0 {
+			moreResultsLabel.SetText(fmt.Sprintf("↓ %d more results — refine your search", extra))
+			moreResultsContainer.Show()
+		} else {
+			moreResultsContainer.Hide()
+		}
+	}
+
 	searchVisible := false
 	var searchBtn *widget.Button
 
 	updateSearchIcon := func() {
 		mu.Lock()
-		hasQuery := query != ""
+		hasQuery := activeQuery != ""
 		mu.Unlock()
 		if hasQuery && !searchVisible {
 			searchBtn.Icon = theme.SearchReplaceIcon()
@@ -308,11 +328,19 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 
 	searchField.OnChanged = func(q string) {
 		mu.Lock()
-		query = q
-		applyFilter()
+		activeQuery = q
+		if q == "" {
+			filtered = current
+			totalMatches = 0
+		}
 		mu.Unlock()
-		list.Refresh()
-		refreshEmpty()
+		if q != "" {
+			sendSearch(q)
+		} else {
+			list.Refresh()
+			refreshEmpty()
+			refreshMore()
+		}
 		updateSearchIcon()
 	}
 
@@ -377,11 +405,13 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 			statusLabel.SetText("")
 			mu.Lock()
 			current = nil
-			query = ""
-			applyFilter()
+			activeQuery = ""
+			totalMatches = 0
+			filtered = nil
 			mu.Unlock()
 			list.Refresh()
 			refreshEmpty()
+			refreshMore()
 		}
 		setTheme := func(name string) { a.Settings().SetTheme(ThemeForName(name)) }
 		setThumbnails := func(v bool) {
@@ -468,11 +498,13 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 		searchField,
 	)
 
+	listArea := container.NewBorder(nil, moreResultsContainer, nil, nil, list)
+
 	mainContent := container.NewBorder(
 		container.NewVBox(header),
-		container.NewBorder(nil, nil, nil, settingsBtn, statusLabel),
+		container.NewBorder(nil, nil, nil, container.NewHBox(countLabel, settingsBtn), statusLabel),
 		nil, nil,
-		container.NewStack(list, container.NewCenter(emptyLabel), container.NewCenter(noResultsLabel)),
+		container.NewStack(listArea, container.NewCenter(emptyLabel), container.NewCenter(noResultsLabel)),
 	)
 
 	showMain = func() {
@@ -488,15 +520,17 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 				activeHelp.Hide()
 				return
 			}
-			if query != "" || searchVisible {
+			if activeQuery != "" || searchVisible {
 				searchField.SetText("")
 				hideSearch()
 				mu.Lock()
-				query = ""
-				applyFilter()
+				activeQuery = ""
+				totalMatches = 0
+				filtered = current
 				mu.Unlock()
 				list.Refresh()
 				refreshEmpty()
+				refreshMore()
 			} else {
 				w.Close()
 			}
@@ -578,11 +612,56 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 					}
 				}
 				current = append([]history.ClipboardEntry{entry}, deduped...)
-				applyFilter()
+				if cfg.MaxEntries > 0 && len(current) > cfg.MaxEntries {
+					current = current[:cfg.MaxEntries]
+				}
+				q := activeQuery
+				if q == "" {
+					filtered = current
+				}
+				mu.Unlock()
+				if q != "" {
+					sendSearch(q)
+				} else {
+					fyne.Do(func() {
+						list.Refresh()
+						refreshEmpty()
+						refreshMore()
+					})
+				}
+			case newItems, ok := <-refreshes:
+				if !ok {
+					refreshes = nil
+					continue
+				}
+				mu.Lock()
+				current = newItems
+				q := activeQuery
+				if q == "" {
+					filtered = current
+				}
+				mu.Unlock()
+				if q != "" {
+					sendSearch(q)
+				} else {
+					fyne.Do(func() {
+						list.Refresh()
+						refreshEmpty()
+						refreshMore()
+					})
+				}
+			case sr, ok := <-searches:
+				if !ok {
+					return
+				}
+				mu.Lock()
+				filtered = sr.Items
+				totalMatches = sr.TotalMatches
 				mu.Unlock()
 				fyne.Do(func() {
 					list.Refresh()
 					refreshEmpty()
+					refreshMore()
 				})
 			case _, ok := <-focusReqs:
 				if !ok {

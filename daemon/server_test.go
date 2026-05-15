@@ -24,7 +24,7 @@ func testServer(t *testing.T) (*Server, string) {
 		hist:     history.NewMemoryHistory(50),
 		watch:    &noopWatcher{},
 		sockPath: sockPath,
-		clients:  make(map[chan history.ClipboardEntry]struct{}),
+		clients:  make(map[chan serverMsg]struct{}),
 	}
 	return s, sockPath
 }

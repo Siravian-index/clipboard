@@ -19,23 +19,28 @@ const showSocketPath = "/.clipboard-manager-show.sock"
 type msgType string
 
 const (
-	msgInit   msgType = "init"
-	msgAdd    msgType = "add"
-	msgSelect msgType = "select"
-	msgCancel msgType = "cancel"
-	msgClear  msgType = "clear"
-	msgFocus  msgType = "focus"
+	msgInit         msgType = "init"
+	msgAdd          msgType = "add"
+	msgRefresh      msgType = "refresh"
+	msgSelect       msgType = "select"
+	msgCancel       msgType = "cancel"
+	msgClear        msgType = "clear"
+	msgFocus        msgType = "focus"
+	msgSearch       msgType = "search"
+	msgSearchResult msgType = "search_result"
 )
 
 type serverMsg struct {
-	Type  msgType                  `json:"type"`
-	Items []history.ClipboardEntry `json:"items,omitempty"`
-	Item  *history.ClipboardEntry  `json:"item,omitempty"`
+	Type         msgType                  `json:"type"`
+	Items        []history.ClipboardEntry `json:"items,omitempty"`
+	Item         *history.ClipboardEntry  `json:"item,omitempty"`
+	TotalMatches int                      `json:"total_matches,omitempty"`
 }
 
 type clientMsg struct {
 	Type    msgType `json:"type"`
 	EntryID int64   `json:"entry_id,omitempty"`
+	Query   string  `json:"query,omitempty"`
 }
 
 // Run connects to the daemon, shows the Fyne picker with live updates,
@@ -75,17 +80,33 @@ func Run() {
 		log.Fatalf("unexpected init message: %s", scanner.Bytes())
 	}
 
-	// Stream subsequent add messages into the updates channel.
+	// Stream subsequent add/refresh/search_result messages into their respective channels.
 	updates := make(chan history.ClipboardEntry, 32)
+	refreshes := make(chan []history.ClipboardEntry, 4)
+	searches := make(chan ui.SearchResponse, 4)
 	go func() {
 		defer close(updates)
+		defer close(refreshes)
 		for scanner.Scan() {
 			var msg serverMsg
 			if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
 				continue
 			}
-			if msg.Type == msgAdd && msg.Item != nil {
-				updates <- *msg.Item
+			switch msg.Type {
+			case msgAdd:
+				if msg.Item != nil {
+					updates <- *msg.Item
+				}
+			case msgRefresh:
+				select {
+				case refreshes <- msg.Items:
+				default:
+				}
+			case msgSearchResult:
+				select {
+				case searches <- ui.SearchResponse{Items: msg.Items, TotalMatches: msg.TotalMatches}:
+				default:
+				}
 			}
 		}
 	}()
@@ -95,7 +116,12 @@ func Run() {
 		conn.Write(append(msg, '\n'))
 	}
 
-	selections, err := ui.NewFyneUI().Show(initMsg.Items, updates, onClear, focusReqs)
+	sendSearch := func(query string) {
+		msg, _ := json.Marshal(clientMsg{Type: msgSearch, Query: query})
+		conn.Write(append(msg, '\n'))
+	}
+
+	selections, err := ui.NewFyneUI().Show(initMsg.Items, updates, refreshes, searches, sendSearch, onClear, focusReqs)
 	if err != nil {
 		msg, _ := json.Marshal(clientMsg{Type: msgCancel})
 		conn.Write(append(msg, '\n'))
