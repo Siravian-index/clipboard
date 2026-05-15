@@ -103,9 +103,21 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 	current := make([]history.ClipboardEntry, len(items))
 	copy(current, items)
 
+	// imageLabelCache avoids re-reading + decoding image files on every scroll tick.
+	imageLabelCache := make(map[string]string)
+
 	// filtered holds the current view after applying the search query.
 	var filtered []history.ClipboardEntry
 	var query string
+
+	cachedImageLabel := func(path string) string {
+		if label, ok := imageLabelCache[path]; ok {
+			return label
+		}
+		label := imageLabel(path)
+		imageLabelCache[path] = label
+		return label
+	}
 
 	applyFilter := func() {
 		if query == "" {
@@ -115,7 +127,7 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 			for _, e := range current {
 				var haystack string
 				if e.Type == history.EntryTypeImage {
-					haystack = imageLabel(e.Content)
+					haystack = cachedImageLabel(e.Content)
 				} else {
 					haystack = e.Content
 				}
@@ -158,17 +170,21 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 			lbl := box.Objects[0].(*widget.Label)
 
 			if entry.Type == history.EntryTypeImage {
-				img.File = entry.Content
-				img.Resource = nil
+				if img.File != entry.Content {
+					img.File = entry.Content
+					img.Resource = nil
+					img.Refresh()
+				}
 				img.Show()
-				lbl.SetText(imageLabel(entry.Content))
+				lbl.SetText(cachedImageLabel(entry.Content))
 			} else {
-				img.File = ""
-				img.Resource = nil
-				img.Hide()
+				if img.Visible() {
+					img.File = ""
+					img.Resource = nil
+					img.Hide()
+				}
 				lbl.SetText(truncateText(entry.Content))
 			}
-			box.Refresh()
 		},
 	)
 
