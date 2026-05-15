@@ -88,7 +88,7 @@ func (e *searchEntry) TypedShortcut(s fyne.Shortcut) {
 
 // Show displays the clipboard history picker. It returns a channel that emits
 // each entry the user selects; the channel is closed when the window is dismissed.
-func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.ClipboardEntry, refreshes <-chan []history.ClipboardEntry, searches <-chan SearchResponse, sendSearch func(string), onClear func(), focusReqs <-chan struct{}) (<-chan history.ClipboardEntry, error) {
+func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates <-chan history.ClipboardEntry, refreshes <-chan []history.ClipboardEntry, searches <-chan SearchResponse, counts <-chan int, sendSearch func(string), onClear func(), focusReqs <-chan struct{}) (<-chan history.ClipboardEntry, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		cfg = config.Default()
@@ -103,7 +103,7 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 	a := app.New()
 	a.Settings().SetTheme(ThemeForName(cfg.Theme))
 	w := a.NewWindow("Clipboard History")
-	w.Resize(fyne.NewSize(500, 460))
+	w.Resize(fyne.NewSize(500, 520))
 	w.SetFixedSize(true)
 	w.CenterOnScreen()
 
@@ -148,7 +148,8 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 	applyFilter()
 
 	statusLabel := widget.NewLabel("")
-	countLabel := widget.NewLabel(fmt.Sprintf("(%d)", len(current)))
+	totalCount := initialTotal
+	countLabel := widget.NewLabel(fmt.Sprintf("(%d)", totalCount))
 
 	countFn := func() int {
 		mu.Lock()
@@ -272,16 +273,16 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 	moreResultsContainer := container.NewVBox(moreResultsLine, moreResultsLabel)
 	moreResultsContainer.Hide()
 
+	var listArea *fyne.Container
 	var refreshMore func()
 
 	refreshEmpty := func() {
 		mu.Lock()
 		totalEmpty := len(current) == 0
 		filteredEmpty := len(filtered) == 0
-		n := len(current)
 		mu.Unlock()
 
-		countLabel.SetText(fmt.Sprintf("(%d)", n))
+		countLabel.SetText(fmt.Sprintf("(%d)", totalCount))
 		if totalEmpty {
 			emptyLabel.Show()
 			noResultsLabel.Hide()
@@ -304,6 +305,9 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 			moreResultsContainer.Show()
 		} else {
 			moreResultsContainer.Hide()
+		}
+		if listArea != nil {
+			listArea.Refresh()
 		}
 	}
 
@@ -403,6 +407,7 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 		onMainScreen = false
 		onClearUI := func() {
 			statusLabel.SetText("")
+			totalCount = 0
 			mu.Lock()
 			current = nil
 			activeQuery = ""
@@ -498,7 +503,7 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 		searchField,
 	)
 
-	listArea := container.NewBorder(nil, moreResultsContainer, nil, nil, list)
+	listArea = container.NewBorder(nil, moreResultsContainer, nil, nil, list)
 
 	mainContent := container.NewBorder(
 		container.NewVBox(header),
@@ -663,6 +668,13 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 					refreshEmpty()
 					refreshMore()
 				})
+			case n, ok := <-counts:
+				if !ok {
+					counts = nil
+					continue
+				}
+				totalCount = n
+				fyne.Do(func() { countLabel.SetText(fmt.Sprintf("(%d)", totalCount)) })
 			case _, ok := <-focusReqs:
 				if !ok {
 					return

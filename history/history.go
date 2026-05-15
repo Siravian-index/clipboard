@@ -9,5 +9,6 @@ type History interface {
 	Add(entry ClipboardEntry)
 	List() []ClipboardEntry
 	Search(query string, limit int) SearchResult
+	Count() int
 	Clear()
 }

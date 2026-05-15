@@ -129,6 +129,14 @@ func (h *SQLiteHistory) MaxSize() int {
 	return h.maxSize
 }
 
+func (h *SQLiteHistory) Count() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var n int
+	_ = h.db.QueryRow(`SELECT COUNT(*) FROM entries`).Scan(&n)
+	return n
+}
+
 func (h *SQLiteHistory) Search(query string, limit int) SearchResult {
 	pattern := "%" + query + "%"
 

@@ -35,6 +35,7 @@ type serverMsg struct {
 	Items        []history.ClipboardEntry `json:"items,omitempty"`
 	Item         *history.ClipboardEntry  `json:"item,omitempty"`
 	TotalMatches int                      `json:"total_matches,omitempty"`
+	TotalCount   int                      `json:"total_count,omitempty"`
 }
 
 type clientMsg struct {
@@ -84,9 +85,11 @@ func Run() {
 	updates := make(chan history.ClipboardEntry, 32)
 	refreshes := make(chan []history.ClipboardEntry, 4)
 	searches := make(chan ui.SearchResponse, 4)
+	counts := make(chan int, 8)
 	go func() {
 		defer close(updates)
 		defer close(refreshes)
+		defer close(counts)
 		for scanner.Scan() {
 			var msg serverMsg
 			if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
@@ -97,10 +100,22 @@ func Run() {
 				if msg.Item != nil {
 					updates <- *msg.Item
 				}
+				if msg.TotalCount > 0 {
+					select {
+					case counts <- msg.TotalCount:
+					default:
+					}
+				}
 			case msgRefresh:
 				select {
 				case refreshes <- msg.Items:
 				default:
+				}
+				if msg.TotalCount > 0 {
+					select {
+					case counts <- msg.TotalCount:
+					default:
+					}
 				}
 			case msgSearchResult:
 				select {
@@ -121,7 +136,7 @@ func Run() {
 		conn.Write(append(msg, '\n'))
 	}
 
-	selections, err := ui.NewFyneUI().Show(initMsg.Items, updates, refreshes, searches, sendSearch, onClear, focusReqs)
+	selections, err := ui.NewFyneUI().Show(initMsg.Items, initMsg.TotalCount, updates, refreshes, searches, counts, sendSearch, onClear, focusReqs)
 	if err != nil {
 		msg, _ := json.Marshal(clientMsg{Type: msgCancel})
 		conn.Write(append(msg, '\n'))

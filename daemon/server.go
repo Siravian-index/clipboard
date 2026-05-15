@@ -42,6 +42,7 @@ type serverMsg struct {
 	Item         *history.ClipboardEntry  `json:"item,omitempty"`
 	Query        string                   `json:"query,omitempty"`
 	TotalMatches int                      `json:"total_matches,omitempty"`
+	TotalCount   int                      `json:"total_count,omitempty"`
 }
 
 type clientMsg struct {
@@ -154,9 +155,10 @@ func (s *Server) reloadConfig() {
 
 // broadcast sends a new entry to all connected clients.
 func (s *Server) broadcast(entry history.ClipboardEntry) {
+	total := s.hist.Count()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	msg := serverMsg{Type: msgAdd, Item: &entry}
+	msg := serverMsg{Type: msgAdd, Item: &entry, TotalCount: total}
 	for ch := range s.clients {
 		select {
 		case ch <- msg:
@@ -168,7 +170,8 @@ func (s *Server) broadcast(entry history.ClipboardEntry) {
 // broadcastRefresh sends the current history list to all connected clients.
 func (s *Server) broadcastRefresh() {
 	items := s.hist.List()
-	msg := serverMsg{Type: msgRefresh, Items: items}
+	total := s.hist.Count()
+	msg := serverMsg{Type: msgRefresh, Items: items, TotalCount: total}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for ch := range s.clients {
@@ -209,7 +212,8 @@ func (s *Server) handleConn(conn net.Conn) {
 	defer s.unsubscribe(ch)
 
 	items := s.hist.List()
-	init, _ := json.Marshal(serverMsg{Type: msgInit, Items: items})
+	total := s.hist.Count()
+	init, _ := json.Marshal(serverMsg{Type: msgInit, Items: items, TotalCount: total})
 	if _, err := conn.Write(append(init, '\n')); err != nil {
 		log.Printf("failed to send init: %v", err)
 		return

@@ -55,6 +55,12 @@ func (h *MemoryHistory) List() []ClipboardEntry {
 	return result
 }
 
+func (h *MemoryHistory) Count() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.entries)
+}
+
 func (h *MemoryHistory) Clear() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
