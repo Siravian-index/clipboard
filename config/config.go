@@ -25,7 +25,7 @@ func Default() *Config {
 		KeepWindowOpen:      true,
 		MaxImageSizeMB:      defaultMaxImageSizeMB,
 		Theme:               "dark",
-		ShowImageThumbnails: false,
+		ShowImageThumbnails: true,
 	}
 }
 

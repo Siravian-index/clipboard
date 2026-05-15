@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/color"
 	_ "image/png"
 	"os"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+	"golang.org/x/image/draw"
 
 	"golang.design/x/clipboard"
 
@@ -158,33 +160,44 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 		return len(filtered)
 	}
 
-	// imageResourceCache holds pre-loaded fyne.Resource so canvas.Image never
-	// reads or decodes from disk during scroll (only used when thumbnails on).
-	imageResourceCache := make(map[string]fyne.Resource)
-	cachedImageResource := func(path string) fyne.Resource {
-		if r, ok := imageResourceCache[path]; ok {
-			return r
+	// thumbnailCache holds pre-decoded and pre-scaled 60x60 NRGBA thumbnails.
+	// Populated before w.Show() so UpdateItem never does I/O or decode.
+	thumbnailCache := make(map[string]*image.NRGBA)
+	cachedThumbnail := func(path string) *image.NRGBA {
+		if t, ok := thumbnailCache[path]; ok {
+			return t
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return nil
 		}
-		r := fyne.NewStaticResource(path, data)
-		imageResourceCache[path] = r
-		return r
+		src, _, err := image.Decode(bytes.NewReader(data))
+		if err != nil {
+			return nil
+		}
+		dst := image.NewNRGBA(image.Rect(0, 0, 60, 60))
+		draw.BiLinear.Scale(dst, dst.Bounds(), src, src.Bounds(), draw.Over, nil)
+		thumbnailCache[path] = dst
+		return dst
 	}
+
+	// rasterPaths tracks which image path is currently displayed in each
+	// recycled Raster cell so Refresh() is only called when the path changes.
+	rasterPaths := make(map[*canvas.Raster]string)
+
+	// transparent placeholder returned by Raster cells before an image is assigned.
+	placeholder := image.NewUniform(color.Transparent)
 
 	var list *widget.List
 	if cfg.ShowImageThumbnails {
 		list = widget.NewList(
 			countFn,
 			func() fyne.CanvasObject {
-				img := &canvas.Image{}
-				img.FillMode = canvas.ImageFillContain
-				img.SetMinSize(fyne.NewSize(60, 60))
-				img.Hide()
+				r := canvas.NewRaster(func(w, h int) image.Image { return placeholder })
+				r.SetMinSize(fyne.NewSize(60, 60))
+				r.Hide()
 				lbl := widget.NewLabel("")
-				return container.NewBorder(nil, nil, img, nil, lbl)
+				return container.NewBorder(nil, nil, r, nil, lbl)
 			},
 			func(id widget.ListItemID, obj fyne.CanvasObject) {
 				mu.Lock()
@@ -196,26 +209,26 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 				mu.Unlock()
 
 				box := obj.(*fyne.Container)
-				img := box.Objects[1].(*canvas.Image)
+				r := box.Objects[1].(*canvas.Raster)
 				lbl := box.Objects[0].(*widget.Label)
 
 				if entry.Type == history.EntryTypeImage {
-					if res := cachedImageResource(entry.Content); res != nil && img.Resource != res {
-						img.File = ""
-						img.Resource = res
-						img.Refresh()
+					if rasterPaths[r] != entry.Content {
+						if thumb := cachedThumbnail(entry.Content); thumb != nil {
+							r.Generator = func(w, h int) image.Image { return thumb }
+							r.Refresh()
+							rasterPaths[r] = entry.Content
+						}
 					}
-					if !img.Visible() {
-						img.Show()
+					if !r.Visible() {
+						r.Show()
 					}
 					if t := cachedImageLabel(entry.Content); lbl.Text != t {
 						lbl.SetText(t)
 					}
 				} else {
-					if img.Visible() {
-						img.File = ""
-						img.Resource = nil
-						img.Hide()
+					if r.Visible() {
+						r.Hide()
 					}
 					if t := cachedTruncate(entry.Content); lbl.Text != t {
 						lbl.SetText(t)
@@ -579,13 +592,12 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 		}
 	})
 
-	// Pre-warm image resource cache before the window shows so the first
-	// UpdateItem call finds resources already in memory — no file I/O on
-	// the main thread during the initial render that causes transparency flicker.
+	// Pre-decode all image thumbnails before the window shows so UpdateItem
+	// never does I/O or PNG decode on the main thread during render.
 	if cfg.ShowImageThumbnails {
 		for _, item := range current {
 			if item.Type == history.EntryTypeImage {
-				cachedImageResource(item.Content)
+				cachedThumbnail(item.Content)
 			}
 		}
 	}
