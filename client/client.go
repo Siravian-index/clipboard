@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"log"
 	"net"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 
 	"github.com/david-pena/clipboard/history"
@@ -39,6 +41,7 @@ type clientMsg struct {
 // Run connects to the daemon, shows the Fyne picker with live updates,
 // and sends the user's selection back.
 func Run() {
+	go func() { log.Println(http.ListenAndServe("localhost:6060", nil)) }()
 	showSock := os.Getenv("HOME") + showSocketPath
 
 	// If another instance is already showing, forward a focus request and exit.

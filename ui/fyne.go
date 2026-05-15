@@ -152,58 +152,105 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 
 	statusLabel := widget.NewLabel("")
 
+	countFn := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(filtered)
+	}
+
+	// imageResourceCache holds pre-loaded fyne.Resource so canvas.Image never
+	// reads or decodes from disk during scroll (only used when thumbnails on).
+	imageResourceCache := make(map[string]fyne.Resource)
+	cachedImageResource := func(path string) fyne.Resource {
+		if r, ok := imageResourceCache[path]; ok {
+			return r
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		r := fyne.NewStaticResource(path, data)
+		imageResourceCache[path] = r
+		return r
+	}
+
 	var list *widget.List
-	list = widget.NewList(
-		func() int {
-			mu.Lock()
-			defer mu.Unlock()
-			return len(filtered)
-		},
-		func() fyne.CanvasObject {
-			img := &canvas.Image{}
-			img.FillMode = canvas.ImageFillContain
-			img.SetMinSize(fyne.NewSize(60, 60))
-			img.Hide()
-			lbl := widget.NewLabel("")
-			// No Truncation: we already cap at 80 chars in cachedTruncate,
-			// so Fyne's built-in text measurement pass is redundant overhead.
-			return container.NewBorder(nil, nil, img, nil, lbl)
-		},
-		func(id widget.ListItemID, obj fyne.CanvasObject) {
-			mu.Lock()
-			if id >= len(filtered) {
+	if cfg.ShowImageThumbnails {
+		list = widget.NewList(
+			countFn,
+			func() fyne.CanvasObject {
+				img := &canvas.Image{}
+				img.FillMode = canvas.ImageFillContain
+				img.SetMinSize(fyne.NewSize(60, 60))
+				img.Hide()
+				lbl := widget.NewLabel("")
+				return container.NewBorder(nil, nil, img, nil, lbl)
+			},
+			func(id widget.ListItemID, obj fyne.CanvasObject) {
+				mu.Lock()
+				if id >= len(filtered) {
+					mu.Unlock()
+					return
+				}
+				entry := filtered[id]
 				mu.Unlock()
-				return
-			}
-			entry := filtered[id]
-			mu.Unlock()
 
-			box := obj.(*fyne.Container)
-			img := box.Objects[1].(*canvas.Image)
-			lbl := box.Objects[0].(*widget.Label)
+				box := obj.(*fyne.Container)
+				img := box.Objects[1].(*canvas.Image)
+				lbl := box.Objects[0].(*widget.Label)
 
-			if entry.Type == history.EntryTypeImage {
-				if img.File != entry.Content {
-					img.File = entry.Content
-					img.Resource = nil
-					img.Refresh()
+				if entry.Type == history.EntryTypeImage {
+					if res := cachedImageResource(entry.Content); res != nil && img.Resource != res {
+						img.File = ""
+						img.Resource = res
+						img.Refresh()
+					}
+					if !img.Visible() {
+						img.Show()
+					}
+					if t := cachedImageLabel(entry.Content); lbl.Text != t {
+						lbl.SetText(t)
+					}
+				} else {
+					if img.Visible() {
+						img.File = ""
+						img.Resource = nil
+						img.Hide()
+					}
+					if t := cachedTruncate(entry.Content); lbl.Text != t {
+						lbl.SetText(t)
+					}
 				}
-				img.Show()
-				if t := cachedImageLabel(entry.Content); lbl.Text != t {
+			},
+		)
+	} else {
+		list = widget.NewList(
+			countFn,
+			func() fyne.CanvasObject {
+				return widget.NewLabel("")
+			},
+			func(id widget.ListItemID, obj fyne.CanvasObject) {
+				mu.Lock()
+				if id >= len(filtered) {
+					mu.Unlock()
+					return
+				}
+				entry := filtered[id]
+				mu.Unlock()
+
+				lbl := obj.(*widget.Label)
+				var t string
+				if entry.Type == history.EntryTypeImage {
+					t = cachedImageLabel(entry.Content)
+				} else {
+					t = cachedTruncate(entry.Content)
+				}
+				if lbl.Text != t {
 					lbl.SetText(t)
 				}
-			} else {
-				if img.Visible() {
-					img.File = ""
-					img.Resource = nil
-					img.Hide()
-				}
-				if t := cachedTruncate(entry.Content); lbl.Text != t {
-					lbl.SetText(t)
-				}
-			}
-		},
-	)
+			},
+		)
+	}
 
 	emptyLabel := widget.NewLabel("No history yet — start copying something!")
 	emptyLabel.Alignment = fyne.TextAlignCenter
@@ -508,13 +555,15 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 				current = append([]history.ClipboardEntry{entry}, deduped...)
 				applyFilter()
 				mu.Unlock()
-				list.Refresh()
-				refreshEmpty()
+				fyne.Do(func() {
+					list.Refresh()
+					refreshEmpty()
+				})
 			case _, ok := <-focusReqs:
 				if !ok {
 					return
 				}
-				w.RequestFocus()
+				fyne.Do(w.RequestFocus)
 			}
 		}
 	}()
@@ -529,6 +578,17 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 			w.Close()
 		}
 	})
+
+	// Pre-warm image resource cache before the window shows so the first
+	// UpdateItem call finds resources already in memory — no file I/O on
+	// the main thread during the initial render that causes transparency flicker.
+	if cfg.ShowImageThumbnails {
+		for _, item := range current {
+			if item.Type == history.EntryTypeImage {
+				cachedImageResource(item.Content)
+			}
+		}
+	}
 
 	w.Show()
 	showMain()
@@ -605,6 +665,11 @@ func buildSettingsContent(w fyne.Window, cfg *config.Config, onClear func(), onC
 	})
 	keepOpenCheck.SetChecked(cfg.KeepWindowOpen)
 
+	thumbnailsCheck := widget.NewCheck("Show image thumbnails in list", func(v bool) {
+		cfg.ShowImageThumbnails = v
+	})
+	thumbnailsCheck.SetChecked(cfg.ShowImageThumbnails)
+
 	clearBtn := widget.NewButton("🗑 Clear History", func() {
 		dialog.ShowConfirm(
 			"Clear History",
@@ -658,6 +723,7 @@ func buildSettingsContent(w fyne.Window, cfg *config.Config, onClear func(), onC
 		widget.NewSeparator(),
 		widget.NewLabel("Behavior"),
 		keepOpenCheck,
+		thumbnailsCheck,
 		widget.NewSeparator(),
 		widget.NewLabel("Danger zone"),
 		clearBtn,

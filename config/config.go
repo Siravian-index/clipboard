@@ -12,18 +12,20 @@ const (
 )
 
 type Config struct {
-	MaxEntries     int    `json:"max_entries"`
-	KeepWindowOpen bool   `json:"keep_window_open"`
-	MaxImageSizeMB int    `json:"max_image_size_mb"`
-	Theme          string `json:"theme,omitempty"`
+	MaxEntries          int    `json:"max_entries"`
+	KeepWindowOpen      bool   `json:"keep_window_open"`
+	MaxImageSizeMB      int    `json:"max_image_size_mb"`
+	Theme               string `json:"theme,omitempty"`
+	ShowImageThumbnails bool   `json:"show_image_thumbnails"`
 }
 
 func Default() *Config {
 	return &Config{
-		MaxEntries:     defaultMaxEntries,
-		KeepWindowOpen: true,
-		MaxImageSizeMB: defaultMaxImageSizeMB,
-		Theme:          "dark",
+		MaxEntries:          defaultMaxEntries,
+		KeepWindowOpen:      true,
+		MaxImageSizeMB:      defaultMaxImageSizeMB,
+		Theme:               "dark",
+		ShowImageThumbnails: false,
 	}
 }
 
