@@ -105,6 +105,8 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 
 	// imageLabelCache avoids re-reading + decoding image files on every scroll tick.
 	imageLabelCache := make(map[string]string)
+	// truncateCache avoids recomputing the same string on every scroll tick.
+	truncateCache := make(map[string]string)
 
 	// filtered holds the current view after applying the search query.
 	var filtered []history.ClipboardEntry
@@ -117,6 +119,15 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 		label := imageLabel(path)
 		imageLabelCache[path] = label
 		return label
+	}
+
+	cachedTruncate := func(s string) string {
+		if t, ok := truncateCache[s]; ok {
+			return t
+		}
+		t := truncateText(s)
+		truncateCache[s] = t
+		return t
 	}
 
 	applyFilter := func() {
@@ -152,8 +163,10 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 			img := &canvas.Image{}
 			img.FillMode = canvas.ImageFillContain
 			img.SetMinSize(fyne.NewSize(60, 60))
+			img.Hide()
 			lbl := widget.NewLabel("")
-			lbl.Truncation = fyne.TextTruncateEllipsis
+			// No Truncation: we already cap at 80 chars in cachedTruncate,
+			// so Fyne's built-in text measurement pass is redundant overhead.
 			return container.NewBorder(nil, nil, img, nil, lbl)
 		},
 		func(id widget.ListItemID, obj fyne.CanvasObject) {
@@ -176,14 +189,18 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 					img.Refresh()
 				}
 				img.Show()
-				lbl.SetText(cachedImageLabel(entry.Content))
+				if t := cachedImageLabel(entry.Content); lbl.Text != t {
+					lbl.SetText(t)
+				}
 			} else {
 				if img.Visible() {
 					img.File = ""
 					img.Resource = nil
 					img.Hide()
 				}
-				lbl.SetText(truncateText(entry.Content))
+				if t := cachedTruncate(entry.Content); lbl.Text != t {
+					lbl.SetText(t)
+				}
 			}
 		},
 	)
