@@ -15,6 +15,9 @@ func TestDefault(t *testing.T) {
 	if !cfg.KeepWindowOpen {
 		t.Error("expected KeepWindowOpen=true by default")
 	}
+	if !cfg.ShowImageThumbnails {
+		t.Error("expected ShowImageThumbnails=true by default")
+	}
 }
 
 func TestLoad_MissingFileReturnsDefaults(t *testing.T) {
@@ -36,8 +39,9 @@ func TestSaveAndLoad(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	original := &Config{
-		MaxEntries:     100,
-		KeepWindowOpen: false,
+		MaxEntries:          100,
+		KeepWindowOpen:      false,
+		ShowImageThumbnails: true,
 	}
 	if err := original.Save(); err != nil {
 		t.Fatalf("failed to save config: %v", err)
@@ -52,6 +56,9 @@ func TestSaveAndLoad(t *testing.T) {
 	}
 	if loaded.KeepWindowOpen {
 		t.Error("expected KeepWindowOpen=false after save/load")
+	}
+	if !loaded.ShowImageThumbnails {
+		t.Error("expected ShowImageThumbnails=true after save/load")
 	}
 }
 

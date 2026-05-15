@@ -160,12 +160,14 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 		return len(filtered)
 	}
 
-	// thumbnailCache holds pre-decoded and pre-scaled 60x60 NRGBA thumbnails.
+	const thumbSize = 100
+
+	// sourceCache holds fully decoded images keyed by path.
 	// Populated before w.Show() so UpdateItem never does I/O or decode.
-	thumbnailCache := make(map[string]*image.NRGBA)
-	cachedThumbnail := func(path string) *image.NRGBA {
-		if t, ok := thumbnailCache[path]; ok {
-			return t
+	sourceCache := make(map[string]image.Image)
+	cachedSource := func(path string) image.Image {
+		if src, ok := sourceCache[path]; ok {
+			return src
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -175,9 +177,20 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 		if err != nil {
 			return nil
 		}
-		dst := image.NewNRGBA(image.Rect(0, 0, 60, 60))
-		draw.BiLinear.Scale(dst, dst.Bounds(), src, src.Bounds(), draw.Over, nil)
-		thumbnailCache[path] = dst
+		sourceCache[path] = src
+		return src
+	}
+
+	// scaledCache avoids re-scaling when the Generator is called repeatedly
+	// with the same dimensions. Keyed by "path:w:h".
+	scaledCache := make(map[string]*image.NRGBA)
+	scaleThumbnail := func(src image.Image, path string, w, h int) *image.NRGBA {
+		key := fmt.Sprintf("%s:%d:%d", path, w, h)
+		if t, ok := scaledCache[key]; ok {
+			return t
+		}
+		dst := scaleContain(src, w, h)
+		scaledCache[key] = dst
 		return dst
 	}
 
@@ -195,7 +208,7 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 		countFn,
 		func() fyne.CanvasObject {
 			r := canvas.NewRaster(func(w, h int) image.Image { return placeholder })
-			r.SetMinSize(fyne.NewSize(60, 60))
+			r.SetMinSize(fyne.NewSize(thumbSize, thumbSize))
 			r.Hide()
 			lbl := widget.NewLabel("")
 			return container.NewBorder(nil, nil, r, nil, lbl)
@@ -215,8 +228,11 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 
 			if entry.Type == history.EntryTypeImage && showThumbnails {
 				if rasterPaths[r] != entry.Content {
-					if thumb := cachedThumbnail(entry.Content); thumb != nil {
-						r.Generator = func(w, h int) image.Image { return thumb }
+					if src := cachedSource(entry.Content); src != nil {
+						path := entry.Content
+						r.Generator = func(w, h int) image.Image {
+							return scaleThumbnail(src, path, w, h)
+						}
 						r.Refresh()
 						rasterPaths[r] = entry.Content
 					}
@@ -377,7 +393,7 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 				mu.Unlock()
 				for _, item := range snap {
 					if item.Type == history.EntryTypeImage {
-						cachedThumbnail(item.Content)
+						cachedSource(item.Content)
 					}
 				}
 			}
@@ -593,7 +609,7 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 	if cfg.ShowImageThumbnails {
 		for _, item := range current {
 			if item.Type == history.EntryTypeImage {
-				cachedThumbnail(item.Content)
+				cachedSource(item.Content)
 			}
 		}
 	}
@@ -801,4 +817,20 @@ func previewText(entry history.ClipboardEntry) string {
 
 func newFloat(v float64) *float64 {
 	return &v
+}
+
+// scaleContain scales src to fit within w×h preserving aspect ratio,
+// centering the result on a transparent w×h canvas.
+func scaleContain(src image.Image, w, h int) *image.NRGBA {
+	sb := src.Bounds()
+	sw, sh := float64(sb.Dx()), float64(sb.Dy())
+	scale := float64(w) / sw
+	if sh/sw > float64(h)/float64(w) {
+		scale = float64(h) / sh
+	}
+	fitW, fitH := int(sw*scale), int(sh*scale)
+	dst := image.NewNRGBA(image.Rect(0, 0, w, h))
+	offsetX, offsetY := (w-fitW)/2, (h-fitH)/2
+	draw.BiLinear.Scale(dst, image.Rect(offsetX, offsetY, offsetX+fitW, offsetY+fitH), src, sb, draw.Over, nil)
+	return dst
 }
