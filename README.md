@@ -25,6 +25,31 @@ go build -o clipboard-manager .
 ./clipboard-manager show
 ```
 
+## Testing
+
+```bash
+# Run all tests
+go test ./...
+
+# Run tests for a specific package
+go test ./history/...
+go test ./ui/...
+go test ./client/...
+
+# Run a specific test by name
+go test -run TestSQLite ./history/...
+
+# Run with race detector (recommended before committing)
+go test -race ./...
+
+# Run with coverage report
+go test -coverprofile=coverage.out ./...
+go tool cover -func=coverage.out
+
+# Open coverage in browser
+go tool cover -html=coverage.out
+```
+
 ## GNOME Shortcut Setup
 
 1. Go to **Settings → Keyboard → View and Customize Shortcuts → Custom Shortcuts**

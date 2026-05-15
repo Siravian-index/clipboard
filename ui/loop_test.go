@@ -141,12 +141,18 @@ func TestLoop_RefreshReplacesCurrent(t *testing.T) {
 	}
 
 	refreshes := refreshesOf([]history.ClipboardEntry{textClip("new1"), textClip("new2")})
-	close(refreshes)
+	close(refreshes) // closing refreshes sets it to nil in the loop; need updates closed to exit
 	updates := make(chan history.ClipboardEntry)
 	close(updates)
 
-	done := runLoop(s, updates, refreshes, make(chan SearchResponse), make(chan int), make(chan struct{}), func(string) {}, cbs)
+	// Run with a nil-refresh trick: send the batch first, then close updates via a relay.
+	// Simpler: use focusReqs to exit after the refresh callback fires.
+	focusReqs := make(chan struct{})
+	cbs.RefreshList = func() { close(focusReqs) }
+
+	done := runLoop(s, nil, refreshes, make(chan SearchResponse), make(chan int), focusReqs, func(string) {}, cbs)
 	waitDone(t, done)
+	_ = updates
 
 	if s.FilteredCount() != 2 {
 		t.Errorf("expected 2 entries after refresh, got %d", s.FilteredCount())
