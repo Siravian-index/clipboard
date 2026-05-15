@@ -358,8 +358,6 @@ func everforestLightTheme() fyne.Theme {
 // ThemeForName returns the fyne.Theme for the given config key.
 func ThemeForName(name string) fyne.Theme {
 	switch name {
-	case "light":
-		return lightTheme()
 	case "nord":
 		return nordTheme()
 	case "tokyo-night":
@@ -379,7 +377,7 @@ func ThemeForName(name string) fyne.Theme {
 	case "everforest-light":
 		return everforestLightTheme()
 	default:
-		return darkTheme()
+		return nordTheme()
 	}
 }
 
@@ -388,8 +386,6 @@ var ThemeOptions = []struct {
 	Label string
 	Key   string
 }{
-	{"Dark", "dark"},
-	{"Light", "light"},
 	{"Nord", "nord"},
 	{"Tokyo Night", "tokyo-night"},
 	{"Gruvbox", "gruvbox"},

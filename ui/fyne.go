@@ -222,6 +222,7 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 			box := obj.(*fyne.Container)
 			r := box.Objects[1].(*canvas.Raster)
 			lbl := box.Objects[0].(*widget.Label)
+			lbl.Importance = widget.MediumImportance
 
 			if entry.Type == history.EntryTypeImage && showThumbnails {
 				if rasterPaths[r] != entry.Content {
@@ -237,8 +238,11 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 				if !r.Visible() {
 					r.Show()
 				}
-				if t := cachedImageLabel(entry.Content); lbl.Text != t {
+				t := cachedImageLabel(entry.Content)
+				if lbl.Text != t {
 					lbl.SetText(t)
+				} else {
+					lbl.Refresh()
 				}
 			} else {
 				if r.Visible() {
@@ -254,6 +258,8 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 				}
 				if lbl.Text != t {
 					lbl.SetText(t)
+				} else {
+					lbl.Refresh()
 				}
 			}
 		},
@@ -418,7 +424,9 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 			refreshEmpty()
 			refreshMore()
 		}
+		originalTheme := cfg.Theme
 		setTheme := func(name string) { a.Settings().SetTheme(ThemeForName(name)) }
+		revertTheme := func() { a.Settings().SetTheme(ThemeForName(originalTheme)) }
 		setThumbnails := func(v bool) {
 			showThumbnails = v
 			if v {
@@ -434,12 +442,16 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 			}
 			list.Refresh()
 		}
-		settingsContent, save := buildSettingsContent(w, cfg, onClear, onClearUI, func() { showMain() }, setTheme, setThumbnails)
+		settingsContent, save := buildSettingsContent(w, cfg, onClear, onClearUI,
+			func() { revertTheme(); showMain() }, // onCancel: revert + back
+			showMain,                              // onSaved: just back
+			setTheme, setThumbnails)
 		settingsSave = save
 		w.SetTitle("Settings")
 		w.SetContent(settingsContent)
 		w.Canvas().SetOnTypedKey(func(ev *fyne.KeyEvent) {
 			if ev.Name == fyne.KeyEscape {
+				revertTheme()
 				showMain()
 			}
 		})
@@ -728,7 +740,7 @@ func fuzzyMatch(pattern, target string) bool {
 }
 
 // buildSettingsContent returns the settings screen content and a save function for in-window navigation.
-func buildSettingsContent(w fyne.Window, cfg *config.Config, onClear func(), onClearUI func(), goBack func(), setTheme func(string), setThumbnails func(bool)) (fyne.CanvasObject, func()) {
+func buildSettingsContent(w fyne.Window, cfg *config.Config, onClear func(), onClearUI func(), onCancel func(), onSaved func(), setTheme func(string), setThumbnails func(bool)) (fyne.CanvasObject, func()) {
 	selectedTheme := cfg.Theme
 	themeLabels := make([]string, len(ThemeOptions))
 	themeKeys := make([]string, len(ThemeOptions))
@@ -798,7 +810,7 @@ func buildSettingsContent(w fyne.Window, cfg *config.Config, onClear func(), onC
 					if onClearUI != nil {
 						onClearUI()
 					}
-					goBack()
+					onCancel()
 				}
 			},
 			w,
@@ -814,13 +826,13 @@ func buildSettingsContent(w fyne.Window, cfg *config.Config, onClear func(), onC
 			return
 		}
 		sendSIGHUP()
-		goBack()
+		onSaved()
 	}
 
 	saveBtn := widget.NewButton("Save", save)
 
 	backBtn := widget.NewButtonWithIcon("Back", theme.NavigateBackIcon(), func() {
-		goBack()
+		onCancel()
 	})
 
 	body := container.NewVBox(
