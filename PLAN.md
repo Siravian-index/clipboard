@@ -138,7 +138,7 @@ type HotkeyListener interface {
   - `client`: focusExistingInstance, listenForFocus, handleFocusConn con sockets fake (0% → 32%)
   - `ui`: extraído `clipboardState` (state.go) y `runMessageLoop` (loop.go) de `Show()`; ambos unit-testeados sin display (1.7% → 38%)
 - [x] Convenciones de código documentadas en `CLAUDE.md` (Go style / gopher idioms)
-- [ ] **BUG**: La configuración de máximo de entries en el historial no funciona correctamente
+- [x] **BUG**: La configuración de máximo de entries en el historial no funciona correctamente
 - [ ] Mejorar estilo del scrollbar lateral derecho en la lista de entries
 - [ ] Menú de personalización de shortcuts: permitir al usuario reasignar los shortcuts desde la UI de Settings, persistiendo la configuración en `config.json`
 - [ ] Icono de aplicación: diseñar un PNG (256×256), embeber con `fyne bundle` y asignarlo con `a.SetIcon()` para reemplazar el engranaje por defecto en alt-tab, barra de título y taskbar.
