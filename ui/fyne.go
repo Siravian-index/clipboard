@@ -188,70 +188,51 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 	// transparent placeholder returned by Raster cells before an image is assigned.
 	placeholder := image.NewUniform(color.Transparent)
 
-	var list *widget.List
-	if cfg.ShowImageThumbnails {
-		list = widget.NewList(
-			countFn,
-			func() fyne.CanvasObject {
-				r := canvas.NewRaster(func(w, h int) image.Image { return placeholder })
-				r.SetMinSize(fyne.NewSize(60, 60))
-				r.Hide()
-				lbl := widget.NewLabel("")
-				return container.NewBorder(nil, nil, r, nil, lbl)
-			},
-			func(id widget.ListItemID, obj fyne.CanvasObject) {
-				mu.Lock()
-				if id >= len(filtered) {
-					mu.Unlock()
-					return
-				}
-				entry := filtered[id]
+	// showThumbnails is read by UpdateItem and can be flipped at runtime.
+	showThumbnails := cfg.ShowImageThumbnails
+
+	list := widget.NewList(
+		countFn,
+		func() fyne.CanvasObject {
+			r := canvas.NewRaster(func(w, h int) image.Image { return placeholder })
+			r.SetMinSize(fyne.NewSize(60, 60))
+			r.Hide()
+			lbl := widget.NewLabel("")
+			return container.NewBorder(nil, nil, r, nil, lbl)
+		},
+		func(id widget.ListItemID, obj fyne.CanvasObject) {
+			mu.Lock()
+			if id >= len(filtered) {
 				mu.Unlock()
+				return
+			}
+			entry := filtered[id]
+			mu.Unlock()
 
-				box := obj.(*fyne.Container)
-				r := box.Objects[1].(*canvas.Raster)
-				lbl := box.Objects[0].(*widget.Label)
+			box := obj.(*fyne.Container)
+			r := box.Objects[1].(*canvas.Raster)
+			lbl := box.Objects[0].(*widget.Label)
 
-				if entry.Type == history.EntryTypeImage {
-					if rasterPaths[r] != entry.Content {
-						if thumb := cachedThumbnail(entry.Content); thumb != nil {
-							r.Generator = func(w, h int) image.Image { return thumb }
-							r.Refresh()
-							rasterPaths[r] = entry.Content
-						}
-					}
-					if !r.Visible() {
-						r.Show()
-					}
-					if t := cachedImageLabel(entry.Content); lbl.Text != t {
-						lbl.SetText(t)
-					}
-				} else {
-					if r.Visible() {
-						r.Hide()
-					}
-					if t := cachedTruncate(entry.Content); lbl.Text != t {
-						lbl.SetText(t)
+			if entry.Type == history.EntryTypeImage && showThumbnails {
+				if rasterPaths[r] != entry.Content {
+					if thumb := cachedThumbnail(entry.Content); thumb != nil {
+						r.Generator = func(w, h int) image.Image { return thumb }
+						r.Refresh()
+						rasterPaths[r] = entry.Content
 					}
 				}
-			},
-		)
-	} else {
-		list = widget.NewList(
-			countFn,
-			func() fyne.CanvasObject {
-				return widget.NewLabel("")
-			},
-			func(id widget.ListItemID, obj fyne.CanvasObject) {
-				mu.Lock()
-				if id >= len(filtered) {
-					mu.Unlock()
-					return
+				if !r.Visible() {
+					r.Show()
 				}
-				entry := filtered[id]
-				mu.Unlock()
-
-				lbl := obj.(*widget.Label)
+				if t := cachedImageLabel(entry.Content); lbl.Text != t {
+					lbl.SetText(t)
+				}
+			} else {
+				if r.Visible() {
+					r.Generator = func(w, h int) image.Image { return placeholder }
+					rasterPaths[r] = ""
+					r.Hide()
+				}
 				var t string
 				if entry.Type == history.EntryTypeImage {
 					t = cachedImageLabel(entry.Content)
@@ -261,9 +242,9 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 				if lbl.Text != t {
 					lbl.SetText(t)
 				}
-			},
-		)
-	}
+			}
+		},
+	)
 
 	emptyLabel := widget.NewLabel("No history yet — start copying something!")
 	emptyLabel.Alignment = fyne.TextAlignCenter
@@ -387,7 +368,22 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, updates <-chan history.Cli
 			refreshEmpty()
 		}
 		setTheme := func(name string) { a.Settings().SetTheme(ThemeForName(name)) }
-		settingsContent, save := buildSettingsContent(w, cfg, onClear, onClearUI, func() { showMain() }, setTheme)
+		setThumbnails := func(v bool) {
+			showThumbnails = v
+			if v {
+				mu.Lock()
+				snap := make([]history.ClipboardEntry, len(current))
+				copy(snap, current)
+				mu.Unlock()
+				for _, item := range snap {
+					if item.Type == history.EntryTypeImage {
+						cachedThumbnail(item.Content)
+					}
+				}
+			}
+			list.Refresh()
+		}
+		settingsContent, save := buildSettingsContent(w, cfg, onClear, onClearUI, func() { showMain() }, setTheme, setThumbnails)
 		settingsSave = save
 		w.SetTitle("Settings")
 		w.SetContent(settingsContent)
@@ -625,7 +621,7 @@ func fuzzyMatch(pattern, target string) bool {
 }
 
 // buildSettingsContent returns the settings screen content and a save function for in-window navigation.
-func buildSettingsContent(w fyne.Window, cfg *config.Config, onClear func(), onClearUI func(), goBack func(), setTheme func(string)) (fyne.CanvasObject, func()) {
+func buildSettingsContent(w fyne.Window, cfg *config.Config, onClear func(), onClearUI func(), goBack func(), setTheme func(string), setThumbnails func(bool)) (fyne.CanvasObject, func()) {
 	selectedTheme := cfg.Theme
 	themeLabels := make([]string, len(ThemeOptions))
 	themeKeys := make([]string, len(ThemeOptions))
@@ -679,6 +675,7 @@ func buildSettingsContent(w fyne.Window, cfg *config.Config, onClear func(), onC
 
 	thumbnailsCheck := widget.NewCheck("Show image thumbnails in list", func(v bool) {
 		cfg.ShowImageThumbnails = v
+		setThumbnails(v)
 	})
 	thumbnailsCheck.SetChecked(cfg.ShowImageThumbnails)
 
