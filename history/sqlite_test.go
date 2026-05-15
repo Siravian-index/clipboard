@@ -1,6 +1,7 @@
 package history
 
 import (
+	"os"
 	"testing"
 )
 
@@ -124,6 +125,107 @@ func TestSQLiteHistory_ConsecutiveDuplicateIgnored(t *testing.T) {
 
 	if len(h.List()) != 1 {
 		t.Errorf("expected 1 item for consecutive duplicate, got %d", len(h.List()))
+	}
+}
+
+func TestSQLiteHistory_Count(t *testing.T) {
+	h := newTestSQLite(t, 10)
+
+	if h.Count() != 0 {
+		t.Errorf("expected 0, got %d", h.Count())
+	}
+
+	h.Add(textEntry("a"))
+	h.Add(textEntry("b"))
+
+	if h.Count() != 2 {
+		t.Errorf("expected 2, got %d", h.Count())
+	}
+
+	h.Clear()
+	if h.Count() != 0 {
+		t.Errorf("expected 0 after clear, got %d", h.Count())
+	}
+}
+
+func TestSQLiteHistory_MaxSize(t *testing.T) {
+	h := newTestSQLite(t, 42)
+
+	if h.MaxSize() != 42 {
+		t.Errorf("expected 42, got %d", h.MaxSize())
+	}
+
+	h.SetMaxSize(7)
+	if h.MaxSize() != 7 {
+		t.Errorf("expected 7 after SetMaxSize, got %d", h.MaxSize())
+	}
+}
+
+func TestSQLiteHistory_ImageDir(t *testing.T) {
+	dir := t.TempDir()
+	h, err := NewSQLiteHistory(":memory:", dir, 10)
+	if err != nil {
+		t.Fatalf("failed to create SQLiteHistory: %v", err)
+	}
+	defer h.Close()
+
+	if h.ImageDir() != dir {
+		t.Errorf("expected %q, got %q", dir, h.ImageDir())
+	}
+}
+
+func TestSQLiteHistory_Search(t *testing.T) {
+	h := newTestSQLite(t, 100)
+	h.Add(textEntry("hello world"))
+	h.Add(textEntry("foo bar"))
+	h.Add(textEntry("hello go"))
+
+	t.Run("matches substring", func(t *testing.T) {
+		r := h.Search("hello", 10)
+		if r.TotalMatches != 2 {
+			t.Errorf("expected 2 total matches, got %d", r.TotalMatches)
+		}
+		if len(r.Entries) != 2 {
+			t.Errorf("expected 2 entries, got %d", len(r.Entries))
+		}
+	})
+
+	t.Run("limit truncates results", func(t *testing.T) {
+		r := h.Search("hello", 1)
+		if len(r.Entries) != 1 {
+			t.Errorf("expected 1 entry after limit, got %d", len(r.Entries))
+		}
+		if r.TotalMatches != 2 {
+			t.Errorf("expected TotalMatches=2 even when limited, got %d", r.TotalMatches)
+		}
+	})
+
+	t.Run("no matches", func(t *testing.T) {
+		r := h.Search("zzz", 10)
+		if r.TotalMatches != 0 || len(r.Entries) != 0 {
+			t.Errorf("expected empty result, got %+v", r)
+		}
+	})
+}
+
+func TestEnsureImageDir(t *testing.T) {
+	base := t.TempDir()
+	dir, err := EnsureImageDir(base)
+	if err != nil {
+		t.Fatalf("EnsureImageDir failed: %v", err)
+	}
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("image dir not created: %v", err)
+	}
+	if !info.IsDir() {
+		t.Error("expected a directory")
+	}
+
+	// Idempotent — calling again should not error.
+	if _, err := EnsureImageDir(base); err != nil {
+		t.Errorf("second call to EnsureImageDir failed: %v", err)
 	}
 }
 

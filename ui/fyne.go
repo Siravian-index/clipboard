@@ -9,7 +9,6 @@ import (
 	_ "image/png"
 	"os"
 	"strings"
-	"sync"
 	"unicode"
 
 	"fyne.io/fyne/v2"
@@ -98,6 +97,7 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 		return nil, errors.New("no history entries")
 	}
 
+	state := newClipboardState(items, initialTotal, cfg.MaxEntries)
 	selections := make(chan history.ClipboardEntry, 16)
 
 	a := app.New()
@@ -107,19 +107,10 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 	w.SetFixedSize(true)
 	w.CenterOnScreen()
 
-	var mu sync.Mutex
-	current := make([]history.ClipboardEntry, len(items))
-	copy(current, items)
-
 	// imageLabelCache avoids re-reading + decoding image files on every scroll tick.
 	imageLabelCache := make(map[string]string)
 	// truncateCache avoids recomputing the same string on every scroll tick.
 	truncateCache := make(map[string]string)
-
-	// filtered holds the current view after applying the search query.
-	var filtered []history.ClipboardEntry
-	var activeQuery string
-	var totalMatches int
 
 	cachedImageLabel := func(path string) string {
 		if label, ok := imageLabelCache[path]; ok {
@@ -139,28 +130,12 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 		return t
 	}
 
-	applyFilter := func() {
-		if activeQuery == "" {
-			filtered = current
-		}
-		// When activeQuery != "", filtered is set from search results received from daemon.
-	}
-	applyFilter()
-
 	statusLabel := widget.NewLabel("")
-	totalCount := initialTotal
-	countLabel := widget.NewLabel(fmt.Sprintf("(%d)", totalCount))
-
-	countFn := func() int {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(filtered)
-	}
+	countLabel := widget.NewLabel(fmt.Sprintf("(%d)", state.TotalCount()))
 
 	const thumbSize = 100
 
 	// sourceCache holds fully decoded images keyed by path.
-	// Populated before w.Show() so UpdateItem never does I/O or decode.
 	sourceCache := make(map[string]image.Image)
 	cachedSource := func(path string) image.Image {
 		if src, ok := sourceCache[path]; ok {
@@ -179,7 +154,7 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 	}
 
 	// scaledCache avoids re-scaling when the Generator is called repeatedly
-	// with the same dimensions. Keyed by "path:w:h".
+	// with the same dimensions.
 	scaledCache := make(map[string]*image.NRGBA)
 	scaleThumbnail := func(src image.Image, path string, w, h int) *image.NRGBA {
 		key := fmt.Sprintf("%s:%d:%d", path, w, h)
@@ -191,18 +166,15 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 		return dst
 	}
 
-	// rasterPaths tracks which image path is currently displayed in each
-	// recycled Raster cell so Refresh() is only called when the path changes.
+	// rasterPaths tracks which image path is displayed in each recycled Raster cell.
 	rasterPaths := make(map[*canvas.Raster]string)
 
-	// transparent placeholder returned by Raster cells before an image is assigned.
 	placeholder := image.NewUniform(color.Transparent)
 
-	// showThumbnails is read by UpdateItem and can be flipped at runtime.
 	showThumbnails := cfg.ShowImageThumbnails
 
 	list := widget.NewList(
-		countFn,
+		func() int { return state.FilteredCount() },
 		func() fyne.CanvasObject {
 			r := canvas.NewRaster(func(w, h int) image.Image { return placeholder })
 			r.SetMinSize(fyne.NewSize(thumbSize, thumbSize))
@@ -211,13 +183,10 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 			return container.NewBorder(nil, nil, r, nil, lbl)
 		},
 		func(id widget.ListItemID, obj fyne.CanvasObject) {
-			mu.Lock()
-			if id >= len(filtered) {
-				mu.Unlock()
+			entry, ok := state.EntryAt(id)
+			if !ok {
 				return
 			}
-			entry := filtered[id]
-			mu.Unlock()
 
 			box := obj.(*fyne.Container)
 			r := box.Objects[1].(*canvas.Raster)
@@ -283,12 +252,8 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 	var refreshMore func()
 
 	refreshEmpty := func() {
-		mu.Lock()
-		totalEmpty := len(current) == 0
-		filteredEmpty := len(filtered) == 0
-		mu.Unlock()
-
-		countLabel.SetText(fmt.Sprintf("(%d)", totalCount))
+		totalEmpty, filteredEmpty := state.IsEmpty()
+		countLabel.SetText(fmt.Sprintf("(%d)", state.TotalCount()))
 		if totalEmpty {
 			emptyLabel.Show()
 			noResultsLabel.Hide()
@@ -302,10 +267,7 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 	}
 
 	refreshMore = func() {
-		mu.Lock()
-		extra := totalMatches - len(filtered)
-		q := activeQuery
-		mu.Unlock()
+		q, extra := state.ExtraMatches()
 		if q != "" && extra > 0 {
 			moreResultsLabel.SetText(fmt.Sprintf("↓ %d more results — refine your search", extra))
 			moreResultsContainer.Show()
@@ -321,10 +283,7 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 	var searchBtn *widget.Button
 
 	updateSearchIcon := func() {
-		mu.Lock()
-		hasQuery := activeQuery != ""
-		mu.Unlock()
-		if hasQuery && !searchVisible {
+		if state.ActiveQuery() != "" && !searchVisible {
 			searchBtn.Icon = theme.SearchReplaceIcon()
 		} else {
 			searchBtn.Icon = theme.SearchIcon()
@@ -337,13 +296,7 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 	searchField.Hide()
 
 	searchField.OnChanged = func(q string) {
-		mu.Lock()
-		activeQuery = q
-		if q == "" {
-			filtered = current
-			totalMatches = 0
-		}
-		mu.Unlock()
+		state.SetQuery(q)
 		if q != "" {
 			sendSearch(q)
 		} else {
@@ -357,7 +310,6 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 	var showMain func()
 	onMainScreen := true
 
-	// helpOpen prevents stacking multiple help dialogs and lets Escape close it.
 	helpOpen := false
 	var activeHelp dialog.Dialog
 
@@ -406,20 +358,13 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 		activeHelp = d
 	}
 
-	// settingsSave holds the active save function while settings is open.
 	var settingsSave func()
 
 	openSettings := func() {
 		onMainScreen = false
 		onClearUI := func() {
 			statusLabel.SetText("")
-			totalCount = 0
-			mu.Lock()
-			current = nil
-			activeQuery = ""
-			totalMatches = 0
-			filtered = nil
-			mu.Unlock()
+			state.Clear()
 			list.Refresh()
 			refreshEmpty()
 			refreshMore()
@@ -430,11 +375,7 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 		setThumbnails := func(v bool) {
 			showThumbnails = v
 			if v {
-				mu.Lock()
-				snap := make([]history.ClipboardEntry, len(current))
-				copy(snap, current)
-				mu.Unlock()
-				for _, item := range snap {
+				for _, item := range state.Current() {
 					if item.Type == history.EntryTypeImage {
 						cachedSource(item.Content)
 					}
@@ -443,8 +384,8 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 			list.Refresh()
 		}
 		settingsContent, save := buildSettingsContent(w, cfg, onClear, onClearUI,
-			func() { revertTheme(); showMain() }, // onCancel: revert + back
-			showMain,                              // onSaved: just back
+			func() { revertTheme(); showMain() },
+			showMain,
 			setTheme, setThumbnails)
 		settingsSave = save
 		w.SetTitle("Settings")
@@ -457,7 +398,6 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 		})
 	}
 
-	// hideSearch closes the search bar keeping the active filter.
 	hideSearch := func() {
 		searchVisible = false
 		searchField.Hide()
@@ -465,7 +405,6 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 		updateSearchIcon()
 	}
 
-	// showSearch opens the search bar and focuses the input.
 	showSearch := func() {
 		searchVisible = true
 		searchField.Show()
@@ -473,12 +412,10 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 		updateSearchIcon()
 	}
 
-	// clearSearch empties the search input and resets the filter.
 	clearSearch := func() {
 		searchField.SetText("")
 	}
 
-	// Wire searchEntry shortcut handlers — these fire when the input has focus.
 	searchField.onCtrlF = func() {
 		if onMainScreen {
 			hideSearch()
@@ -537,17 +474,9 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 				activeHelp.Hide()
 				return
 			}
-			if activeQuery != "" || searchVisible {
-				searchField.SetText("")
+			if state.ActiveQuery() != "" || searchVisible {
+				searchField.SetText("") // triggers OnChanged → state.SetQuery("") + refresh
 				hideSearch()
-				mu.Lock()
-				activeQuery = ""
-				totalMatches = 0
-				filtered = current
-				mu.Unlock()
-				list.Refresh()
-				refreshEmpty()
-				refreshMore()
 			} else {
 				w.Close()
 			}
@@ -555,7 +484,6 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 		refreshEmpty()
 	}
 
-	// Canvas-level shortcuts fire when the list (or nothing) has focus.
 	ctrlShortcut := func(key fyne.KeyName) *desktop.CustomShortcut {
 		return &desktop.CustomShortcut{KeyName: key, Modifier: fyne.KeyModifierControl}
 	}
@@ -589,7 +517,6 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 		showHelp()
 	})
 
-	// Ctrl+S — save in any screen that exposes a save action (e.g. settings).
 	w.Canvas().AddShortcut(ctrlShortcut(fyne.KeyS), func(_ fyne.Shortcut) {
 		if !onMainScreen && settingsSave != nil {
 			settingsSave()
@@ -597,14 +524,10 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 	})
 
 	list.OnSelected = func(id widget.ListItemID) {
-		mu.Lock()
-		if id >= len(filtered) {
-			mu.Unlock()
+		entry, ok := state.EntryAt(id)
+		if !ok {
 			return
 		}
-		entry := filtered[id]
-		mu.Unlock()
-
 		writeToClipboard(w, entry)
 		selections <- entry
 		statusLabel.SetText("Copied: " + previewText(entry))
@@ -614,87 +537,14 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 		list.Unselect(id)
 	}
 
-	go func() {
-		for {
-			select {
-			case entry, ok := <-updates:
-				if !ok {
-					return
-				}
-				mu.Lock()
-				deduped := current[:0]
-				for _, e := range current {
-					if !(e.Type == entry.Type && e.Content == entry.Content) {
-						deduped = append(deduped, e)
-					}
-				}
-				current = append([]history.ClipboardEntry{entry}, deduped...)
-				if cfg.MaxEntries > 0 && len(current) > cfg.MaxEntries {
-					current = current[:cfg.MaxEntries]
-				}
-				q := activeQuery
-				if q == "" {
-					filtered = current
-				}
-				mu.Unlock()
-				if q != "" {
-					sendSearch(q)
-				} else {
-					fyne.Do(func() {
-						list.Refresh()
-						refreshEmpty()
-						refreshMore()
-					})
-				}
-			case newItems, ok := <-refreshes:
-				if !ok {
-					refreshes = nil
-					continue
-				}
-				mu.Lock()
-				current = newItems
-				q := activeQuery
-				if q == "" {
-					filtered = current
-				}
-				mu.Unlock()
-				if q != "" {
-					sendSearch(q)
-				} else {
-					fyne.Do(func() {
-						list.Refresh()
-						refreshEmpty()
-						refreshMore()
-					})
-				}
-			case sr, ok := <-searches:
-				if !ok {
-					return
-				}
-				mu.Lock()
-				filtered = sr.Items
-				totalMatches = sr.TotalMatches
-				mu.Unlock()
-				fyne.Do(func() {
-					list.Refresh()
-					refreshEmpty()
-					refreshMore()
-				})
-			case n, ok := <-counts:
-				if !ok {
-					counts = nil
-					continue
-				}
-				totalCount = n
-				fyne.Do(func() { countLabel.SetText(fmt.Sprintf("(%d)", totalCount)) })
-			case _, ok := <-focusReqs:
-				if !ok {
-					return
-				}
-				fyne.Do(w.RequestFocus)
-			}
-		}
-	}()
+	cbs := loopCallbacks{
+		RefreshList:  func() { fyne.Do(list.Refresh) },
+		RefreshEmpty: func() { fyne.Do(refreshEmpty) },
+		RefreshMore:  func() { fyne.Do(refreshMore) },
+		UpdateCount:  func(n int) { fyne.Do(func() { countLabel.SetText(fmt.Sprintf("(%d)", n)) }) },
+		RequestFocus: func() { fyne.Do(w.RequestFocus) },
+	}
+	go runMessageLoop(state, updates, refreshes, searches, counts, focusReqs, sendSearch, cbs)
 
 	w.SetOnClosed(func() {
 		close(selections)
@@ -707,10 +557,8 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 		}
 	})
 
-	// Pre-decode all image thumbnails before the window shows so UpdateItem
-	// never does I/O or PNG decode on the main thread during render.
 	if cfg.ShowImageThumbnails {
-		for _, item := range current {
+		for _, item := range state.Current() {
 			if item.Type == history.EntryTypeImage {
 				cachedSource(item.Content)
 			}

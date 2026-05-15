@@ -103,3 +103,64 @@ func TestMemoryHistory_TrimPreservesWhitespace(t *testing.T) {
 		t.Errorf("expected trimmed value 'hello', got %q", items[0].Content)
 	}
 }
+
+func TestMemoryHistory_Count(t *testing.T) {
+	h := NewMemoryHistory(10)
+
+	if h.Count() != 0 {
+		t.Errorf("expected 0, got %d", h.Count())
+	}
+
+	h.Add(textEntry("a"))
+	h.Add(textEntry("b"))
+
+	if h.Count() != 2 {
+		t.Errorf("expected 2, got %d", h.Count())
+	}
+
+	h.Clear()
+	if h.Count() != 0 {
+		t.Errorf("expected 0 after clear, got %d", h.Count())
+	}
+}
+
+func TestMemoryHistory_Search(t *testing.T) {
+	h := NewMemoryHistory(10)
+	h.Add(textEntry("hello world"))
+	h.Add(textEntry("foo bar"))
+	h.Add(textEntry("hello go"))
+
+	t.Run("matches substring", func(t *testing.T) {
+		r := h.Search("hello", 10)
+		if r.TotalMatches != 2 {
+			t.Errorf("expected 2 total matches, got %d", r.TotalMatches)
+		}
+		if len(r.Entries) != 2 {
+			t.Errorf("expected 2 entries, got %d", len(r.Entries))
+		}
+	})
+
+	t.Run("case insensitive", func(t *testing.T) {
+		r := h.Search("HELLO", 10)
+		if r.TotalMatches != 2 {
+			t.Errorf("expected 2 matches case-insensitive, got %d", r.TotalMatches)
+		}
+	})
+
+	t.Run("limit truncates results", func(t *testing.T) {
+		r := h.Search("hello", 1)
+		if len(r.Entries) != 1 {
+			t.Errorf("expected 1 entry after limit, got %d", len(r.Entries))
+		}
+		if r.TotalMatches != 2 {
+			t.Errorf("expected TotalMatches=2 even when limited, got %d", r.TotalMatches)
+		}
+	})
+
+	t.Run("no matches", func(t *testing.T) {
+		r := h.Search("zzz", 10)
+		if r.TotalMatches != 0 || len(r.Entries) != 0 {
+			t.Errorf("expected empty result, got %+v", r)
+		}
+	})
+}

@@ -65,3 +65,16 @@ go build -o clipboard-manager . && systemctl --user restart clipboard-manager
 ## Platform
 
 Linux only (X11/XWayland). Requires display server for clipboard access.
+
+## Go Style
+
+All code must follow idiomatic Go (gopher style). Key rules:
+
+- **Naming**: `MixedCaps` for exported, `mixedCaps` for unexported. No underscores except in test files (`Test_`, `_test.go`). Acronyms stay uppercase (`SQLite`, `PID`, `URL`).
+- **Errors**: return errors as the last value; handle every error explicitly; never ignore with `_` unless the reason is obvious. Wrap with `fmt.Errorf("context: %w", err)` when adding context.
+- **Interfaces**: define interfaces at the point of use (consumer side), not in the package that implements them. Keep them small — prefer one or two methods.
+- **Concurrency**: share memory by communicating. Protect shared state with a `sync.Mutex` field on the owning struct, not package-level vars. Always run tests with `-race`.
+- **Comments**: godoc style (`// FuncName does…`) only on exported symbols. No inline comments explaining what the code does — only WHY when it is non-obvious.
+- **Packages**: one concept per package. Avoid `util`, `common`, `helpers`. Package name is the noun; it should not stutter (`history.History` is fine, `historyutil.HistoryUtil` is not).
+- **Tests**: table-driven where there are multiple cases. Use `t.Helper()` in helpers. Prefer real implementations over mocks; use interfaces only when the real thing is unavailable (display, socket).
+- **Formatting**: `gofmt`/`goimports` before committing. No manual alignment of struct fields or map literals.

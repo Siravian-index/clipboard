@@ -109,6 +109,26 @@ func TestPollingWatcher_ImageDetection(t *testing.T) {
 	}
 }
 
+func TestPollingWatcher_Reset(t *testing.T) {
+	dir := t.TempDir()
+	w := NewPollingWatcher(50*time.Millisecond, dir, 10)
+
+	// Manually set internal state to verify Reset clears it.
+	w.lastText = "something"
+	w.lastImageHash = "deadbeef"
+
+	w.Reset()
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.lastText != "" {
+		t.Errorf("expected lastText to be empty after Reset, got %q", w.lastText)
+	}
+	if w.lastImageHash != "" {
+		t.Errorf("expected lastImageHash to be empty after Reset, got %q", w.lastImageHash)
+	}
+}
+
 // minimalPNG returns a 1x1 white PNG image as bytes.
 func minimalPNG() []byte {
 	return []byte{
