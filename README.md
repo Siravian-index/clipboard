@@ -5,24 +5,40 @@ A Linux clipboard history manager built in Go. Runs as a background daemon and s
 ## Requirements
 
 - Linux with X11 or XWayland
-- Go 1.21+ (to build)
+- Go 1.21+ (to build from source)
 - System graphics libraries (already present on any desktop Linux):
   `libgl1-mesa-dev xorg-dev`
 
-## Build
+## Install
+
+Clone the repo and run the install script from the repository root:
 
 ```bash
-go build -o clipboard-manager .
+git clone https://github.com/david-pena/clipboard.git
+cd clipboard
+./install.sh
+```
+
+This will:
+1. Compile the binary
+2. Install it to `~/.local/bin/clipboard-manager`
+3. Install and start the systemd user service (autostart on login)
+
+Make sure `~/.local/bin` is in your `PATH`. If not, add this to your `~/.bashrc` or `~/.zshrc`:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
 ## Usage
 
 ```bash
-# Start the background daemon
-./clipboard-manager daemon
-
 # Open the history picker
-./clipboard-manager show
+clipboard-manager show
+
+# The daemon starts automatically via systemd; to manage it manually:
+systemctl --user start clipboard-manager
+systemctl --user stop clipboard-manager
 ```
 
 ## Testing
@@ -59,18 +75,9 @@ go tool cover -html=coverage.out
    - **Command:** `/full/path/to/clipboard-manager show`
    - **Shortcut:** your preferred key combo (e.g. `Ctrl+Alt+V`)
 
-## Autostart with systemd (runs daemon on login)
+## Systemd service
 
-### Install
-
-```bash
-cp systemd/clipboard-manager.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable clipboard-manager
-systemctl --user start clipboard-manager
-```
-
-### Useful commands
+The install script sets up autostart automatically. Useful commands:
 
 ```bash
 # Check status

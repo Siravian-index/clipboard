@@ -4,7 +4,7 @@ After=graphical-session.target
 PartOf=graphical-session.target
 
 [Service]
-ExecStart=%h/Code/golang/clipboard/clipboard-manager daemon
+ExecStart=%h/.local/bin/clipboard-manager daemon
 Restart=on-failure
 RestartSec=3
 
