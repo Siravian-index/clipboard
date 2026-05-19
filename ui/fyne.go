@@ -273,7 +273,8 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 					r.Hide()
 				}
 				// Password entries already had their label set above.
-				if !isPassword(entry.Content) || entry.Type == history.EntryTypeImage {
+				// URLs take priority over password detection.
+				if !isPassword(entry.Content) || isURL(entry.Content) || entry.Type == history.EntryTypeImage {
 					var t string
 					if entry.Type == history.EntryTypeImage {
 						t = cachedImageLabel(entry.Content)
@@ -588,7 +589,7 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 		writeToClipboard(w, entry)
 		selections <- entry
 		var statusPreview string
-		if entry.Type == history.EntryTypeText && isPassword(entry.Content) {
+		if entry.Type == history.EntryTypeText && isPassword(entry.Content) && !isURL(entry.Content) {
 			statusPreview = passwordMask(entry.Content)
 		} else {
 			statusPreview = previewText(entry)
