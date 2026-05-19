@@ -7,7 +7,9 @@ import (
 	"image"
 	"image/color"
 	_ "image/png"
+	"net/url"
 	"os"
+	"os/exec"
 	"strings"
 	"unicode"
 
@@ -131,6 +133,7 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 	}
 
 	statusLabel := widget.NewLabel("")
+	statusLabel.Truncation = fyne.TextTruncateEllipsis
 	countLabel := widget.NewLabel(fmt.Sprintf("(%d)", state.TotalCount()))
 
 	const thumbSize = 100
@@ -180,7 +183,11 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 			r.SetMinSize(fyne.NewSize(thumbSize, thumbSize))
 			r.Hide()
 			lbl := widget.NewLabel("")
-			return container.NewBorder(nil, nil, r, nil, lbl)
+			lbl.Truncation = fyne.TextTruncateEllipsis
+			linkBtn := widget.NewButtonWithIcon("", theme.ComputerIcon(), func() {})
+			linkBtn.Importance = widget.LowImportance
+			linkBtn.Hide()
+			return container.NewBorder(nil, nil, r, linkBtn, lbl)
 		},
 		func(id widget.ListItemID, obj fyne.CanvasObject) {
 			entry, ok := state.EntryAt(id)
@@ -191,7 +198,20 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 			box := obj.(*fyne.Container)
 			r := box.Objects[1].(*canvas.Raster)
 			lbl := box.Objects[0].(*widget.Label)
+			linkBtn := box.Objects[2].(*widget.Button)
 			lbl.Importance = widget.MediumImportance
+
+			if isURL(entry.Content) && entry.Type == history.EntryTypeText {
+				lbl.Importance = widget.HighImportance
+				rawURL := entry.Content
+				linkBtn.OnTapped = func() {
+					exec.Command("xdg-open", rawURL).Start() //nolint
+				}
+				linkBtn.Show()
+			} else {
+				linkBtn.OnTapped = nil
+				linkBtn.Hide()
+			}
 
 			if entry.Type == history.EntryTypeImage && showThumbnails {
 				if rasterPaths[r] != entry.Content {
@@ -768,6 +788,16 @@ func previewText(entry history.ClipboardEntry) string {
 
 func newFloat(v float64) *float64 {
 	return &v
+}
+
+// isURL returns true if s is a valid http or https URL.
+func isURL(s string) bool {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "http://") && !strings.HasPrefix(s, "https://") {
+		return false
+	}
+	u, err := url.ParseRequestURI(s)
+	return err == nil && u.Host != ""
 }
 
 // scaleContain scales src to fit within w×h preserving aspect ratio,
