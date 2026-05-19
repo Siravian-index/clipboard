@@ -126,31 +126,29 @@ func Run() {
 		}
 	}()
 
-	onClear := func() {
-		msg, _ := json.Marshal(clientMsg{Type: msgClear})
-		conn.Write(append(msg, '\n'))
+	writeMsg := func(m clientMsg) {
+		data, _ := json.Marshal(m)
+		if _, err := conn.Write(append(data, '\n')); err != nil {
+			log.Printf("write to daemon [%s]: %v", m.Type, err)
+		}
 	}
 
-	sendSearch := func(query string) {
-		msg, _ := json.Marshal(clientMsg{Type: msgSearch, Query: query})
-		conn.Write(append(msg, '\n'))
-	}
+	onClear := func() { writeMsg(clientMsg{Type: msgClear}) }
+
+	sendSearch := func(query string) { writeMsg(clientMsg{Type: msgSearch, Query: query}) }
 
 	selections, err := ui.NewFyneUI().Show(initMsg.Items, initMsg.TotalCount, updates, refreshes, searches, counts, sendSearch, onClear, focusReqs)
 	if err != nil {
-		msg, _ := json.Marshal(clientMsg{Type: msgCancel})
-		conn.Write(append(msg, '\n'))
+		writeMsg(clientMsg{Type: msgCancel})
 		return
 	}
 
 	for entry := range selections {
-		msg, _ := json.Marshal(clientMsg{Type: msgSelect, EntryID: entry.ID})
-		conn.Write(append(msg, '\n'))
+		writeMsg(clientMsg{Type: msgSelect, EntryID: entry.ID})
 	}
 
 	// Window was closed — notify daemon.
-	msg, _ := json.Marshal(clientMsg{Type: msgCancel})
-	conn.Write(append(msg, '\n'))
+	writeMsg(clientMsg{Type: msgCancel})
 }
 
 // focusExistingInstance tries to connect to an already-running picker and send
