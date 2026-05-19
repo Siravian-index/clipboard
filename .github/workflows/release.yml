@@ -28,7 +28,7 @@ jobs:
         run: go test -race ./...
 
       - name: Build
-        run: go build -o clipboard-manager .
+        run: go build -ldflags="-s -w" -o clipboard-manager .
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
