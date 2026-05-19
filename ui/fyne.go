@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"container/list"
 	"errors"
 	"fmt"
 	"image"
@@ -110,23 +111,32 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 	w.SetFixedSize(true)
 	w.CenterOnScreen()
 
+	// smallCacheCap is the flush threshold for cheap string caches.
+	// A little over max_entries so we never flush during normal use.
+	smallCacheCap := cfg.MaxEntries + 10
+
 	// imageLabelCache avoids re-reading + decoding image files on every scroll tick.
 	imageLabelCache := make(map[string]string)
-	// truncateCache avoids recomputing the same string on every scroll tick.
-	truncateCache := make(map[string]string)
-
 	cachedImageLabel := func(path string) string {
 		if label, ok := imageLabelCache[path]; ok {
 			return label
+		}
+		if len(imageLabelCache) >= smallCacheCap {
+			imageLabelCache = make(map[string]string)
 		}
 		label := imageLabel(path)
 		imageLabelCache[path] = label
 		return label
 	}
 
+	// truncateCache avoids recomputing the same string on every scroll tick.
+	truncateCache := make(map[string]string)
 	cachedTruncate := func(s string) string {
 		if t, ok := truncateCache[s]; ok {
 			return t
+		}
+		if len(truncateCache) >= smallCacheCap {
+			truncateCache = make(map[string]string)
 		}
 		t := truncateText(s)
 		truncateCache[s] = t
@@ -139,10 +149,12 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 
 	const thumbSize = 100
 
-	// sourceCache holds fully decoded images keyed by path.
-	sourceCache := make(map[string]image.Image)
+	// sourceCache holds fully decoded images keyed by path. Capped at 15
+	// entries via LRU to bound memory regardless of max_entries config —
+	// only ~6 items are visible at once, so 15 provides comfortable headroom.
+	sourceCache := newLRU[string, image.Image](15)
 	cachedSource := func(path string) image.Image {
-		if src, ok := sourceCache[path]; ok {
+		if src, ok := sourceCache.get(path); ok {
 			return src
 		}
 		data, err := os.ReadFile(path)
@@ -153,17 +165,21 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 		if err != nil {
 			return nil
 		}
-		sourceCache[path] = src
+		sourceCache.put(path, src)
 		return src
 	}
 
 	// scaledCache avoids re-scaling when the Generator is called repeatedly
-	// with the same dimensions.
+	// with the same dimensions. Thumbnails are small (~40 KB each) so we
+	// cap at smallCacheCap rather than using LRU.
 	scaledCache := make(map[string]*image.NRGBA)
 	scaleThumbnail := func(src image.Image, path string, w, h int) *image.NRGBA {
 		key := fmt.Sprintf("%s:%d:%d", path, w, h)
 		if t, ok := scaledCache[key]; ok {
 			return t
+		}
+		if len(scaledCache) >= smallCacheCap {
+			scaledCache = make(map[string]*image.NRGBA)
 		}
 		dst := scaleContain(src, w, h)
 		scaledCache[key] = dst
@@ -909,4 +925,53 @@ func scaleContain(src image.Image, w, h int) *image.NRGBA {
 	offsetX, offsetY := (w-fitW)/2, (h-fitH)/2
 	draw.BiLinear.Scale(dst, image.Rect(offsetX, offsetY, offsetX+fitW, offsetY+fitH), src, sb, draw.Over, nil)
 	return dst
+}
+
+// lruCache is a small LRU cache backed by a map and a doubly-linked list.
+// It is not goroutine-safe; callers must synchronize if needed.
+type lruCache[K comparable, V any] struct {
+	cap   int
+	items map[K]*lruEntry[K, V]
+	list  *list.List
+}
+
+type lruEntry[K comparable, V any] struct {
+	key   K
+	value V
+	elem  *list.Element
+}
+
+func newLRU[K comparable, V any](cap int) *lruCache[K, V] {
+	return &lruCache[K, V]{
+		cap:   cap,
+		items: make(map[K]*lruEntry[K, V], cap),
+		list:  list.New(),
+	}
+}
+
+func (c *lruCache[K, V]) get(key K) (V, bool) {
+	if e, ok := c.items[key]; ok {
+		c.list.MoveToFront(e.elem)
+		return e.value, true
+	}
+	var zero V
+	return zero, false
+}
+
+func (c *lruCache[K, V]) put(key K, value V) {
+	if e, ok := c.items[key]; ok {
+		e.value = value
+		c.list.MoveToFront(e.elem)
+		return
+	}
+	if len(c.items) >= c.cap {
+		back := c.list.Back()
+		if back != nil {
+			c.list.Remove(back)
+			delete(c.items, back.Value.(*lruEntry[K, V]).key)
+		}
+	}
+	entry := &lruEntry[K, V]{key: key, value: value}
+	entry.elem = c.list.PushFront(entry)
+	c.items[key] = entry
 }
