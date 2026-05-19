@@ -1,15 +1,14 @@
-name: Release
+name: CI
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
+  pull_request:
+    branches: [main]
 
 jobs:
-  build-and-release:
+  test:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
 
     steps:
       - name: Checkout
@@ -26,12 +25,3 @@ jobs:
 
       - name: Test
         run: go test -race ./...
-
-      - name: Build
-        run: go build -o clipboard-manager .
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: clipboard-manager
-          generate_release_notes: true
