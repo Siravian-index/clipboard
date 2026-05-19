@@ -17,6 +17,7 @@ type Config struct {
 	MaxImageSizeMB      int    `json:"max_image_size_mb"`
 	Theme               string `json:"theme,omitempty"`
 	ShowImageThumbnails bool   `json:"show_image_thumbnails"`
+	DetectPasswords     bool   `json:"detect_passwords"`
 }
 
 func Default() *Config {
@@ -26,6 +27,7 @@ func Default() *Config {
 		MaxImageSizeMB:      defaultMaxImageSizeMB,
 		Theme:               "dark",
 		ShowImageThumbnails: true,
+		DetectPasswords:     false,
 	}
 }
 

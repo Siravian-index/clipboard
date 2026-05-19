@@ -2,15 +2,18 @@ package ui
 
 import (
 	"bytes"
+	"container/list"
 	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	_ "image/png"
+	"math"
 	"net/url"
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"unicode"
 
 	"fyne.io/fyne/v2"
@@ -109,23 +112,32 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 	w.SetFixedSize(true)
 	w.CenterOnScreen()
 
+	// smallCacheCap is the flush threshold for cheap string caches.
+	// A little over max_entries so we never flush during normal use.
+	smallCacheCap := cfg.MaxEntries + 10
+
 	// imageLabelCache avoids re-reading + decoding image files on every scroll tick.
 	imageLabelCache := make(map[string]string)
-	// truncateCache avoids recomputing the same string on every scroll tick.
-	truncateCache := make(map[string]string)
-
 	cachedImageLabel := func(path string) string {
 		if label, ok := imageLabelCache[path]; ok {
 			return label
+		}
+		if len(imageLabelCache) >= smallCacheCap {
+			imageLabelCache = make(map[string]string)
 		}
 		label := imageLabel(path)
 		imageLabelCache[path] = label
 		return label
 	}
 
+	// truncateCache avoids recomputing the same string on every scroll tick.
+	truncateCache := make(map[string]string)
 	cachedTruncate := func(s string) string {
 		if t, ok := truncateCache[s]; ok {
 			return t
+		}
+		if len(truncateCache) >= smallCacheCap {
+			truncateCache = make(map[string]string)
 		}
 		t := truncateText(s)
 		truncateCache[s] = t
@@ -138,10 +150,12 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 
 	const thumbSize = 100
 
-	// sourceCache holds fully decoded images keyed by path.
-	sourceCache := make(map[string]image.Image)
+	// sourceCache holds fully decoded images keyed by path. Capped at 15
+	// entries via LRU to bound memory regardless of max_entries config —
+	// only ~6 items are visible at once, so 15 provides comfortable headroom.
+	sourceCache := newLRU[string, image.Image](15)
 	cachedSource := func(path string) image.Image {
-		if src, ok := sourceCache[path]; ok {
+		if src, ok := sourceCache.get(path); ok {
 			return src
 		}
 		data, err := os.ReadFile(path)
@@ -152,17 +166,21 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 		if err != nil {
 			return nil
 		}
-		sourceCache[path] = src
+		sourceCache.put(path, src)
 		return src
 	}
 
 	// scaledCache avoids re-scaling when the Generator is called repeatedly
-	// with the same dimensions.
+	// with the same dimensions. Thumbnails are small (~40 KB each) so we
+	// cap at smallCacheCap rather than using LRU.
 	scaledCache := make(map[string]*image.NRGBA)
 	scaleThumbnail := func(src image.Image, path string, w, h int) *image.NRGBA {
 		key := fmt.Sprintf("%s:%d:%d", path, w, h)
 		if t, ok := scaledCache[key]; ok {
 			return t
+		}
+		if len(scaledCache) >= smallCacheCap {
+			scaledCache = make(map[string]*image.NRGBA)
 		}
 		dst := scaleContain(src, w, h)
 		scaledCache[key] = dst
@@ -175,6 +193,11 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 	placeholder := image.NewUniform(color.Transparent)
 
 	showThumbnails := cfg.ShowImageThumbnails
+	detectPasswords := cfg.DetectPasswords
+	looksLikePassword := func(s string) bool {
+		return detectPasswords && isPassword(s)
+	}
+	var revealedMu sync.RWMutex
 	revealedPasswords := make(map[string]bool)
 	var refreshList func()
 
@@ -218,23 +241,30 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 				linkBtn.Show()
 				eyeBtn.OnTapped = nil
 				eyeBtn.Hide()
-			} else if isPassword(entry.Content) && entry.Type == history.EntryTypeText {
+			} else if looksLikePassword(entry.Content) && entry.Type == history.EntryTypeText {
 				linkBtn.OnTapped = nil
 				linkBtn.Hide()
 				content := entry.Content
+				revealedMu.RLock()
 				revealed := revealedPasswords[content]
+				revealedMu.RUnlock()
 				if revealed {
 					eyeBtn.Icon = theme.VisibilityIcon()
 				} else {
 					eyeBtn.Icon = theme.VisibilityOffIcon()
 				}
 				eyeBtn.OnTapped = func() {
+					revealedMu.Lock()
 					revealedPasswords[content] = !revealedPasswords[content]
+					revealedMu.Unlock()
 					refreshList()
 				}
 				eyeBtn.Show()
 				eyeBtn.Refresh()
-				if revealedPasswords[content] {
+				revealedMu.RLock()
+				isRevealed := revealedPasswords[content]
+				revealedMu.RUnlock()
+				if isRevealed {
 					lbl.SetText(cachedTruncate(content))
 				} else {
 					lbl.SetText(passwordMask(content))
@@ -274,7 +304,7 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 				}
 				// Password entries already had their label set above.
 				// URLs take priority over password detection.
-				if !isPassword(entry.Content) || isURL(entry.Content) || entry.Type == history.EntryTypeImage {
+				if !looksLikePassword(entry.Content) || isURL(entry.Content) || entry.Type == history.EntryTypeImage {
 					var t string
 					if entry.Type == history.EntryTypeImage {
 						t = cachedImageLabel(entry.Content)
@@ -589,7 +619,7 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 		writeToClipboard(w, entry)
 		selections <- entry
 		var statusPreview string
-		if entry.Type == history.EntryTypeText && isPassword(entry.Content) && !isURL(entry.Content) {
+		if entry.Type == history.EntryTypeText && looksLikePassword(entry.Content) && !isURL(entry.Content) {
 			statusPreview = passwordMask(entry.Content)
 		} else {
 			statusPreview = previewText(entry)
@@ -710,6 +740,11 @@ func buildSettingsContent(w fyne.Window, cfg *config.Config, onClear func(), onC
 	})
 	thumbnailsCheck.SetChecked(cfg.ShowImageThumbnails)
 
+	detectPasswordsCheck := widget.NewCheck("Mask password-like entries", func(v bool) {
+		cfg.DetectPasswords = v
+	})
+	detectPasswordsCheck.SetChecked(cfg.DetectPasswords)
+
 	clearBtn := widget.NewButton("🗑 Clear History", func() {
 		dialog.ShowConfirm(
 			"Clear History",
@@ -764,6 +799,7 @@ func buildSettingsContent(w fyne.Window, cfg *config.Config, onClear func(), onC
 		widget.NewLabel("Behavior"),
 		keepOpenCheck,
 		thumbnailsCheck,
+		detectPasswordsCheck,
 		widget.NewSeparator(),
 		widget.NewLabel("Danger zone"),
 		clearBtn,
@@ -835,10 +871,15 @@ func newFloat(v float64) *float64 {
 }
 
 // isPassword returns true when s looks like a password:
-// no whitespace, 8–64 chars, and at least two distinct character classes
-// (uppercase, lowercase, digit, symbol).
+// no whitespace, 8–64 chars, all four character classes present, and
+// Shannon entropy ≥ 3.5 bits/char (high randomness, not structured text).
+// File paths and URLs are explicitly excluded.
 func isPassword(s string) bool {
 	if len(s) < 8 || len(s) > 64 {
+		return false
+	}
+	// File paths and git branches are not passwords.
+	if strings.ContainsAny(s, "/\\") {
 		return false
 	}
 	for _, r := range s {
@@ -859,13 +900,29 @@ func isPassword(s string) bool {
 			hasSymbol = true
 		}
 	}
-	classes := 0
-	for _, v := range []bool{hasUpper, hasLower, hasDigit, hasSymbol} {
-		if v {
-			classes++
-		}
+	if !hasUpper || !hasLower || !hasDigit || !hasSymbol {
+		return false
 	}
-	return classes >= 3
+	return shannonEntropy(s) >= 3.5
+}
+
+// shannonEntropy returns the Shannon entropy in bits per character.
+func shannonEntropy(s string) float64 {
+	if len(s) == 0 {
+		return 0
+	}
+	freq := make(map[rune]float64)
+	runes := []rune(s)
+	n := float64(len(runes))
+	for _, r := range runes {
+		freq[r]++
+	}
+	var entropy float64
+	for _, count := range freq {
+		p := count / n
+		entropy -= p * math.Log2(p)
+	}
+	return entropy
 }
 
 // passwordMask returns a fixed-width bullet string for hidden passwords.
@@ -901,4 +958,53 @@ func scaleContain(src image.Image, w, h int) *image.NRGBA {
 	offsetX, offsetY := (w-fitW)/2, (h-fitH)/2
 	draw.BiLinear.Scale(dst, image.Rect(offsetX, offsetY, offsetX+fitW, offsetY+fitH), src, sb, draw.Over, nil)
 	return dst
+}
+
+// lruCache is a small LRU cache backed by a map and a doubly-linked list.
+// It is not goroutine-safe; callers must synchronize if needed.
+type lruCache[K comparable, V any] struct {
+	cap   int
+	items map[K]*lruEntry[K, V]
+	list  *list.List
+}
+
+type lruEntry[K comparable, V any] struct {
+	key   K
+	value V
+	elem  *list.Element
+}
+
+func newLRU[K comparable, V any](cap int) *lruCache[K, V] {
+	return &lruCache[K, V]{
+		cap:   cap,
+		items: make(map[K]*lruEntry[K, V], cap),
+		list:  list.New(),
+	}
+}
+
+func (c *lruCache[K, V]) get(key K) (V, bool) {
+	if e, ok := c.items[key]; ok {
+		c.list.MoveToFront(e.elem)
+		return e.value, true
+	}
+	var zero V
+	return zero, false
+}
+
+func (c *lruCache[K, V]) put(key K, value V) {
+	if e, ok := c.items[key]; ok {
+		e.value = value
+		c.list.MoveToFront(e.elem)
+		return
+	}
+	if len(c.items) >= c.cap {
+		back := c.list.Back()
+		if back != nil {
+			c.list.Remove(back)
+			delete(c.items, back.Value.(*lruEntry[K, V]).key)
+		}
+	}
+	entry := &lruEntry[K, V]{key: key, value: value}
+	entry.elem = c.list.PushFront(entry)
+	c.items[key] = entry
 }
