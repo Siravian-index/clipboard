@@ -8,6 +8,7 @@ import (
 	"image"
 	"image/color"
 	_ "image/png"
+	"math"
 	"net/url"
 	"os"
 	"os/exec"
@@ -192,6 +193,10 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 	placeholder := image.NewUniform(color.Transparent)
 
 	showThumbnails := cfg.ShowImageThumbnails
+	detectPasswords := cfg.DetectPasswords
+	looksLikePassword := func(s string) bool {
+		return detectPasswords && isPassword(s)
+	}
 	var revealedMu sync.RWMutex
 	revealedPasswords := make(map[string]bool)
 	var refreshList func()
@@ -236,7 +241,7 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 				linkBtn.Show()
 				eyeBtn.OnTapped = nil
 				eyeBtn.Hide()
-			} else if isPassword(entry.Content) && entry.Type == history.EntryTypeText {
+			} else if looksLikePassword(entry.Content) && entry.Type == history.EntryTypeText {
 				linkBtn.OnTapped = nil
 				linkBtn.Hide()
 				content := entry.Content
@@ -299,7 +304,7 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 				}
 				// Password entries already had their label set above.
 				// URLs take priority over password detection.
-				if !isPassword(entry.Content) || isURL(entry.Content) || entry.Type == history.EntryTypeImage {
+				if !looksLikePassword(entry.Content) || isURL(entry.Content) || entry.Type == history.EntryTypeImage {
 					var t string
 					if entry.Type == history.EntryTypeImage {
 						t = cachedImageLabel(entry.Content)
@@ -614,7 +619,7 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 		writeToClipboard(w, entry)
 		selections <- entry
 		var statusPreview string
-		if entry.Type == history.EntryTypeText && isPassword(entry.Content) && !isURL(entry.Content) {
+		if entry.Type == history.EntryTypeText && looksLikePassword(entry.Content) && !isURL(entry.Content) {
 			statusPreview = passwordMask(entry.Content)
 		} else {
 			statusPreview = previewText(entry)
@@ -735,6 +740,11 @@ func buildSettingsContent(w fyne.Window, cfg *config.Config, onClear func(), onC
 	})
 	thumbnailsCheck.SetChecked(cfg.ShowImageThumbnails)
 
+	detectPasswordsCheck := widget.NewCheck("Mask password-like entries", func(v bool) {
+		cfg.DetectPasswords = v
+	})
+	detectPasswordsCheck.SetChecked(cfg.DetectPasswords)
+
 	clearBtn := widget.NewButton("🗑 Clear History", func() {
 		dialog.ShowConfirm(
 			"Clear History",
@@ -789,6 +799,7 @@ func buildSettingsContent(w fyne.Window, cfg *config.Config, onClear func(), onC
 		widget.NewLabel("Behavior"),
 		keepOpenCheck,
 		thumbnailsCheck,
+		detectPasswordsCheck,
 		widget.NewSeparator(),
 		widget.NewLabel("Danger zone"),
 		clearBtn,
@@ -860,10 +871,15 @@ func newFloat(v float64) *float64 {
 }
 
 // isPassword returns true when s looks like a password:
-// no whitespace, 8–64 chars, and at least two distinct character classes
-// (uppercase, lowercase, digit, symbol).
+// no whitespace, 8–64 chars, all four character classes present, and
+// Shannon entropy ≥ 3.5 bits/char (high randomness, not structured text).
+// File paths and URLs are explicitly excluded.
 func isPassword(s string) bool {
 	if len(s) < 8 || len(s) > 64 {
+		return false
+	}
+	// File paths and git branches are not passwords.
+	if strings.ContainsAny(s, "/\\") {
 		return false
 	}
 	for _, r := range s {
@@ -884,13 +900,29 @@ func isPassword(s string) bool {
 			hasSymbol = true
 		}
 	}
-	classes := 0
-	for _, v := range []bool{hasUpper, hasLower, hasDigit, hasSymbol} {
-		if v {
-			classes++
-		}
+	if !hasUpper || !hasLower || !hasDigit || !hasSymbol {
+		return false
 	}
-	return classes >= 3
+	return shannonEntropy(s) >= 3.5
+}
+
+// shannonEntropy returns the Shannon entropy in bits per character.
+func shannonEntropy(s string) float64 {
+	if len(s) == 0 {
+		return 0
+	}
+	freq := make(map[rune]float64)
+	runes := []rune(s)
+	n := float64(len(runes))
+	for _, r := range runes {
+		freq[r]++
+	}
+	var entropy float64
+	for _, count := range freq {
+		p := count / n
+		entropy -= p * math.Log2(p)
+	}
+	return entropy
 }
 
 // passwordMask returns a fixed-width bullet string for hidden passwords.
