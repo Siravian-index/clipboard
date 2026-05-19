@@ -142,7 +142,7 @@ type HotkeyListener interface {
 - [ ] Mejorar estilo del scrollbar lateral derecho en la lista de entries
 - [ ] Menú de personalización de shortcuts: permitir al usuario reasignar los shortcuts desde la UI de Settings, persistiendo la configuración en `config.json`
 - [ ] Icono de aplicación: diseñar un PNG (256×256), embeber con `fyne bundle` y asignarlo con `a.SetIcon()` para reemplazar el engranaje por defecto en alt-tab, barra de título y taskbar.
-- [ ] Detección de contraseñas y ofuscación: identificar entradas del historial que posiblemente sean contraseñas (heurística: sin espacios, longitud mínima, mezcla de caracteres, etc.) y mostrarlas ofuscadas en la UI (`••••••••`) con opción de revelar/ocultar por item.
+- [x] Detección de contraseñas y ofuscación: identificar entradas del historial que posiblemente sean contraseñas (heurística: sin espacios, 8–64 chars, 3+ clases de caracteres) y mostrarlas ofuscadas en la UI (`••••••••`) con ojo cerrado/abierto para revelar/ocultar por item. Status bar también muestra bullets al copiar una password.
 - [x] Detección de URLs: identificar entradas que sean links (validando con `url.Parse`) y mostrar un icono adicional en la fila para abrirlos directamente en el browser con `xdg-open`, manteniendo la acción de copiar como principal. Label resaltado con color primario del tema (`widget.HighImportance`); texto truncado con `fyne.TextTruncateEllipsis` para respetar el ancho de la ventana.
 - [ ] Watcher event-driven con X11 xfixes
 - [ ] Soporte Wayland via DBus

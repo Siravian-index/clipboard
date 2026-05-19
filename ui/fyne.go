@@ -175,6 +175,8 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 	placeholder := image.NewUniform(color.Transparent)
 
 	showThumbnails := cfg.ShowImageThumbnails
+	revealedPasswords := make(map[string]bool)
+	var refreshList func()
 
 	list := widget.NewList(
 		func() int { return state.FilteredCount() },
@@ -187,7 +189,11 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 			linkBtn := widget.NewButtonWithIcon("", theme.ComputerIcon(), func() {})
 			linkBtn.Importance = widget.LowImportance
 			linkBtn.Hide()
-			return container.NewBorder(nil, nil, r, linkBtn, lbl)
+			eyeBtn := widget.NewButtonWithIcon("", theme.VisibilityOffIcon(), func() {})
+			eyeBtn.Importance = widget.LowImportance
+			eyeBtn.Hide()
+			rightBtns := container.NewHBox(linkBtn, eyeBtn)
+			return container.NewBorder(nil, nil, r, rightBtns, lbl)
 		},
 		func(id widget.ListItemID, obj fyne.CanvasObject) {
 			entry, ok := state.EntryAt(id)
@@ -198,7 +204,9 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 			box := obj.(*fyne.Container)
 			r := box.Objects[1].(*canvas.Raster)
 			lbl := box.Objects[0].(*widget.Label)
-			linkBtn := box.Objects[2].(*widget.Button)
+			rightBtns := box.Objects[2].(*fyne.Container)
+			linkBtn := rightBtns.Objects[0].(*widget.Button)
+			eyeBtn := rightBtns.Objects[1].(*widget.Button)
 			lbl.Importance = widget.MediumImportance
 
 			if isURL(entry.Content) && entry.Type == history.EntryTypeText {
@@ -208,9 +216,34 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 					exec.Command("xdg-open", rawURL).Start() //nolint
 				}
 				linkBtn.Show()
+				eyeBtn.OnTapped = nil
+				eyeBtn.Hide()
+			} else if isPassword(entry.Content) && entry.Type == history.EntryTypeText {
+				linkBtn.OnTapped = nil
+				linkBtn.Hide()
+				content := entry.Content
+				revealed := revealedPasswords[content]
+				if revealed {
+					eyeBtn.Icon = theme.VisibilityIcon()
+				} else {
+					eyeBtn.Icon = theme.VisibilityOffIcon()
+				}
+				eyeBtn.OnTapped = func() {
+					revealedPasswords[content] = !revealedPasswords[content]
+					refreshList()
+				}
+				eyeBtn.Show()
+				eyeBtn.Refresh()
+				if revealedPasswords[content] {
+					lbl.SetText(cachedTruncate(content))
+				} else {
+					lbl.SetText(passwordMask(content))
+				}
 			} else {
 				linkBtn.OnTapped = nil
 				linkBtn.Hide()
+				eyeBtn.OnTapped = nil
+				eyeBtn.Hide()
 			}
 
 			if entry.Type == history.EntryTypeImage && showThumbnails {
@@ -239,20 +272,24 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 					rasterPaths[r] = ""
 					r.Hide()
 				}
-				var t string
-				if entry.Type == history.EntryTypeImage {
-					t = cachedImageLabel(entry.Content)
-				} else {
-					t = cachedTruncate(entry.Content)
-				}
-				if lbl.Text != t {
-					lbl.SetText(t)
-				} else {
-					lbl.Refresh()
+				// Password entries already had their label set above.
+				if !isPassword(entry.Content) || entry.Type == history.EntryTypeImage {
+					var t string
+					if entry.Type == history.EntryTypeImage {
+						t = cachedImageLabel(entry.Content)
+					} else {
+						t = cachedTruncate(entry.Content)
+					}
+					if lbl.Text != t {
+						lbl.SetText(t)
+					} else {
+						lbl.Refresh()
+					}
 				}
 			}
 		},
 	)
+	refreshList = list.Refresh
 
 	emptyLabel := widget.NewLabel("No history yet — start copying something!")
 	emptyLabel.Alignment = fyne.TextAlignCenter
@@ -550,7 +587,13 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 		}
 		writeToClipboard(w, entry)
 		selections <- entry
-		statusLabel.SetText("Copied: " + previewText(entry))
+		var statusPreview string
+		if entry.Type == history.EntryTypeText && isPassword(entry.Content) {
+			statusPreview = passwordMask(entry.Content)
+		} else {
+			statusPreview = previewText(entry)
+		}
+		statusLabel.SetText("Copied: " + statusPreview)
 		if !cfg.KeepWindowOpen {
 			w.Close()
 		}
@@ -788,6 +831,49 @@ func previewText(entry history.ClipboardEntry) string {
 
 func newFloat(v float64) *float64 {
 	return &v
+}
+
+// isPassword returns true when s looks like a password:
+// no whitespace, 8–64 chars, and at least two distinct character classes
+// (uppercase, lowercase, digit, symbol).
+func isPassword(s string) bool {
+	if len(s) < 8 || len(s) > 64 {
+		return false
+	}
+	for _, r := range s {
+		if unicode.IsSpace(r) {
+			return false
+		}
+	}
+	var hasUpper, hasLower, hasDigit, hasSymbol bool
+	for _, r := range s {
+		switch {
+		case unicode.IsUpper(r):
+			hasUpper = true
+		case unicode.IsLower(r):
+			hasLower = true
+		case unicode.IsDigit(r):
+			hasDigit = true
+		default:
+			hasSymbol = true
+		}
+	}
+	classes := 0
+	for _, v := range []bool{hasUpper, hasLower, hasDigit, hasSymbol} {
+		if v {
+			classes++
+		}
+	}
+	return classes >= 3
+}
+
+// passwordMask returns a fixed-width bullet string for hidden passwords.
+func passwordMask(s string) string {
+	n := len([]rune(s))
+	if n > 12 {
+		n = 12
+	}
+	return strings.Repeat("•", n)
 }
 
 // isURL returns true if s is a valid http or https URL.
