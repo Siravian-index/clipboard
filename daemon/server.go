@@ -250,9 +250,13 @@ func (s *Server) handleConn(conn net.Conn) {
 			case msgSelect:
 				log.Printf("selected entry id=%d", msg.EntryID)
 			case msgClear:
-				s.hist.Clear()
+				// Order matters: clear the OS clipboard and update the watcher
+				// baseline first so the watcher never re-inserts the old content
+				// into the freshly emptied history.
 				clipboard.Write(clipboard.FmtText, []byte{})
 				s.watch.Reset()
+				s.hist.Clear()
+				s.broadcastRefresh()
 				log.Println("history cleared")
 			case msgSearch:
 				result := s.hist.Search(msg.Query, s.maxEntries())
