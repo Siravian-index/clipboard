@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"unicode"
 
 	"fyne.io/fyne/v2"
@@ -175,6 +176,7 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 	placeholder := image.NewUniform(color.Transparent)
 
 	showThumbnails := cfg.ShowImageThumbnails
+	var revealedMu sync.RWMutex
 	revealedPasswords := make(map[string]bool)
 	var refreshList func()
 
@@ -222,19 +224,26 @@ func (f *FyneUI) Show(items []history.ClipboardEntry, initialTotal int, updates 
 				linkBtn.OnTapped = nil
 				linkBtn.Hide()
 				content := entry.Content
+				revealedMu.RLock()
 				revealed := revealedPasswords[content]
+				revealedMu.RUnlock()
 				if revealed {
 					eyeBtn.Icon = theme.VisibilityIcon()
 				} else {
 					eyeBtn.Icon = theme.VisibilityOffIcon()
 				}
 				eyeBtn.OnTapped = func() {
+					revealedMu.Lock()
 					revealedPasswords[content] = !revealedPasswords[content]
+					revealedMu.Unlock()
 					refreshList()
 				}
 				eyeBtn.Show()
 				eyeBtn.Refresh()
-				if revealedPasswords[content] {
+				revealedMu.RLock()
+				isRevealed := revealedPasswords[content]
+				revealedMu.RUnlock()
+				if isRevealed {
 					lbl.SetText(cachedTruncate(content))
 				} else {
 					lbl.SetText(passwordMask(content))
